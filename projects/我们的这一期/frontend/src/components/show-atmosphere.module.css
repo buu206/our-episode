@@ -1,0 +1,154 @@
+.backdrop {
+  --ink: #251b37;
+  --pink: #ff83b7;
+  --lime: #d5ff4f;
+  --lilac: #c4b1ff;
+  --drift-x: 0px;
+  --drift-y: 0px;
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  overflow: clip;
+  pointer-events: none;
+  color: var(--ink);
+}
+.faintOrbit { position: absolute; width: 78%; height: 75%; top: 7%; left: 11%; border: 1px solid #d8d3e03d; border-radius: 50%; transform: rotate(-12deg); }
+.sticker {
+  --tilt: -9deg;
+  --depth: 1;
+  position: absolute;
+  display: block;
+  padding: 14px;
+  border: 0;
+  border-radius: 14px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  pointer-events: auto;
+  -webkit-tap-highlight-color: transparent;
+  transform: translate3d(calc(var(--drift-x) * var(--depth)), calc(var(--drift-y) * var(--depth)), 0);
+}
+.sticker:focus-visible { outline: 2px solid #6b4fc9; outline-offset: 4px; }
+.stickerBody { position: relative; display: block; transform: rotate(var(--tilt)); transition: transform 220ms cubic-bezier(.2,.75,.3,1); }
+.sticker:hover .stickerBody, .sticker:focus-visible .stickerBody { transform: rotate(calc(var(--tilt) + 6deg)) scale(1.065); }
+.sticker:active .stickerBody { transform: rotate(calc(var(--tilt) - 3deg)) scale(.97); }
+.stickerText { position: relative; z-index: 1; display: block; white-space: nowrap; font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif; font-weight: 950; font-style: italic; letter-spacing: -.07em; line-height: 1.08; }
+.scene { left: 2.1%; top: 14%; --depth: .8; }
+.scene .stickerText { font-size: clamp(30px, 3.6vw, 51px); color: var(--pink); -webkit-text-stroke: 1px var(--ink); paint-order: stroke fill; text-shadow: 2px 3px 0 var(--ink); }
+.scene .stickerBody::before { content: ''; position: absolute; inset: 38% -9% -14%; background: var(--lilac); transform: rotate(-5deg); opacity: .28; }
+.keep { right: 3.7%; top: 10%; --tilt: 10deg; --depth: -1; }
+.keep .stickerText { background: var(--lime); padding: 10px 15px 12px; font-size: clamp(21px, 2.4vw, 33px); box-shadow: 3px 4px 0 var(--ink); }
+.arrow { width: 61px; height: 32px; position: absolute; top: 100%; right: 23%; transform: rotate(25deg); }
+.laugh { left: 4.5%; bottom: 14%; --tilt: 8deg; --depth: -.6; }
+.laugh .stickerText { font-size: clamp(25px, 3vw, 42px); color: var(--lilac); -webkit-text-stroke: 1px var(--ink); paint-order: stroke fill; text-shadow: 2px 3px 0 var(--ink); }
+.laugh .stickerBody::after { content: 'HA HA'; position: absolute; bottom: -20px; right: -12px; color: #6b6079; font-size: 10px; font-weight: 800; letter-spacing: .2em; transform: rotate(-9deg); }
+.count { right: 3.4%; bottom: 10%; --tilt: -8deg; --depth: 1.2; }
+.count .stickerBody { display: grid; place-items: center; width: 130px; height: 115px; }
+.countStar { position: absolute; inset: 0; width: 100%; height: 100%; color: var(--pink); }
+.count .stickerText { font-size: 33px; letter-spacing: -.09em; transform: rotate(3deg); }
+.coming { left: 43%; bottom: 0; --tilt: -4deg; --depth: .45; }
+.coming .stickerText { font-size: 16px; letter-spacing: -.03em; color: #7c6c91; border-bottom: 3px solid var(--lime); padding: 3px 4px; }
+.spark { position: absolute; width: 22px; height: 22px; right: -20px; top: -15px; opacity: 0; color: var(--ink); transform: scale(.3) rotate(-50deg); transition: opacity 180ms ease, transform 260ms cubic-bezier(.18,.85,.35,1.4); }
+.sticker[aria-pressed='true'] .spark { opacity: 1; transform: scale(1) rotate(12deg); }
+.sticker[aria-pressed='true'] .stickerBody { transform: rotate(calc(var(--tilt) - 4deg)); }
+
+.opening {
+  --opening-cream: #f8f5ef;
+  --opening-ink: #211e1a;
+  --opening-pink: #ff6d9e;
+  --opening-coral: #ff9960;
+  --opening-yellow: #ffd465;
+  --opening-mint: #ddf6ed;
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  max-width: none;
+  height: 100%;
+  height: 100dvh;
+  max-height: none;
+  margin: 0;
+  border: 0;
+  padding: 0;
+  overflow: hidden;
+  color: var(--opening-ink);
+  background: transparent;
+  z-index: 2147483000;
+}
+.opening:not([open]) { display: none; }
+.opening::backdrop { background: transparent; }
+.openingFrame { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
+.curtain { position: absolute; top: 0; bottom: 0; width: 50.2%; background: radial-gradient(ellipse at 16% 32%, #ff6d9e1c, transparent 48%), radial-gradient(ellipse at 86% 65%, #ddf6edb3, transparent 46%), radial-gradient(ellipse at 58% 14%, #ffd4652b, transparent 42%), var(--opening-cream); background-size: 200% 100%; }
+.curtainLeft { left: 0; background-position: left top; }
+.curtainRight { right: 0; background-position: right top; }
+.opening[open] .curtainLeft { animation: revealLeft 650ms cubic-bezier(.76,0,.24,1) 2000ms both; }
+.opening[open] .curtainRight { animation: revealRight 650ms cubic-bezier(.76,0,.24,1) 2000ms both; }
+.cuts { position: absolute; inset: 0; display: grid; place-items: center; }
+.cutOne, .cutTwo { position: absolute; display: block; width: max-content; padding: .2em .55em .25em; border: 1px solid #ffffffb3; border-radius: .18em; white-space: nowrap; font-family: 'Episode Title', 'PingFang SC', 'Microsoft YaHei', sans-serif; font-size: clamp(31px, 6.6vw, 100px); font-weight: 800; letter-spacing: -.055em; line-height: 1.2; box-shadow: 0 12px 40px #a8775e0d; }
+.cutOne { color: var(--opening-ink); background: #ffe9ab; transform: rotate(-7deg); }
+.cutTwo { color: var(--opening-ink); background: #ffdee7; transform: rotate(5deg); }
+.cutStar { position: absolute; width: clamp(65px, 14vw, 180px); height: auto; color: var(--opening-mint); right: 15%; top: 17%; }
+.opening[open] .cutOne { animation: firstCard 740ms cubic-bezier(.2,.75,.3,1) both; }
+.opening[open] .cutTwo { animation: secondCard 760ms cubic-bezier(.2,.75,.3,1) 280ms both; }
+.opening[open] .cutStar { animation: cutSpark 800ms ease-out 120ms both; }
+.openingWordmark { position: absolute; inset: 0; margin: auto; display: flex; align-items: flex-start; justify-content: center; flex-direction: column; width: max-content; max-width: 88%; padding: 0 2rem; font-family: 'Episode Title', 'PingFang SC', 'Microsoft YaHei', sans-serif; font-weight: 900; font-style: normal; letter-spacing: -.065em; }
+.opening[open] .openingWordmark { animation: wordmarkEntry 1400ms cubic-bezier(.2,.75,.3,1) 850ms both; }
+.openingEyebrow { margin-bottom: 25px; font-size: clamp(10px, 1.3vw, 15px); color: #6c635a; font-weight: 500; font-style: normal; letter-spacing: .25em; }
+.wordmarkTop, .wordmarkBottom { color: var(--opening-coral); background: linear-gradient(110deg, var(--opening-pink) 0%, var(--opening-coral) 100%); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
+.wordmarkTop { position: relative; left: -.04em; font-size: clamp(54px, 10vw, 140px); line-height: 1.08; }
+.wordmarkTop { color: var(--opening-ink); background: none; -webkit-text-fill-color: currentColor; }
+.wordmarkBottom { position: relative; font-size: clamp(68px, 12.4vw, 175px); line-height: 1.08; }
+.wordmarkDot { display: inline-block; padding-left: .07em; color: var(--opening-coral); -webkit-text-fill-color: var(--opening-coral); transform: rotate(8deg); }
+.wordmarkStar { position: absolute; width: clamp(30px, 4vw, 56px); right: 5%; top: calc(50% - 100px); color: var(--opening-yellow); }
+.openingRule { width: 100%; height: 1px; background: #211e1a; margin-top: 27px; opacity: .12; }
+.openingCorner, .openingIndex { position: absolute; bottom: max(24px, env(safe-area-inset-bottom)); font-size: 10px; letter-spacing: .2em; color: #6c635a; }
+.openingCorner { left: 28px; }
+.openingIndex { right: 28px; }
+.opening[open] .openingCorner, .opening[open] .openingIndex { animation: cornerFade 2400ms linear both; }
+.skip { position: absolute; z-index: 3; top: max(20px, env(safe-area-inset-top)); right: max(22px, env(safe-area-inset-right)); min-height: 44px; padding: 9px 16px; border: 1px solid #dcd5cd; border-radius: 999px; color: var(--opening-ink); background: #fffdf9f5; cursor: pointer; font-size: 13px; font-weight: 600; }
+.skip span { padding-left: 10px; color: #9c5945; }
+.skip:hover { background: #ffebe7; border-color: #d8b2a5; }
+.skip:focus-visible { outline: 3px solid #9c5945; outline-offset: 4px; }
+
+@keyframes firstCard { 0% { opacity: 0; transform: translateX(-70vw) rotate(-12deg); } 20%, 58% { opacity: 1; transform: translateX(-4vw) rotate(-7deg); } 100% { opacity: 0; transform: translateX(80vw) rotate(-3deg); } }
+@keyframes secondCard { 0% { opacity: 0; transform: translateX(75vw) rotate(10deg); } 24%, 62% { opacity: 1; transform: translateX(3vw) rotate(5deg); } 100% { opacity: 0; transform: translateX(-80vw) rotate(1deg); } }
+@keyframes cutSpark { 0% { opacity: 0; transform: scale(.2) rotate(-55deg); } 35%, 65% { opacity: 1; transform: scale(1) rotate(15deg); } 100% { opacity: 0; transform: scale(.7) rotate(50deg); } }
+@keyframes wordmarkEntry { 0% { opacity: 0; transform: translateY(24px) scale(.95); } 18%, 78% { opacity: 1; transform: translateY(0) scale(1); } 100% { opacity: 0; transform: translateY(-10px) scale(1.015); } }
+@keyframes revealLeft { to { transform: translateX(-101%); } }
+@keyframes revealRight { to { transform: translateX(101%); } }
+@keyframes cornerFade { 0%, 85% { opacity: .7; } 100% { opacity: 0; } }
+
+@media (max-width: 1050px) {
+  .scene { left: 0; top: 3%; }
+  .keep { right: 0; top: 2%; }
+  .laugh { left: 0; bottom: 4%; }
+  .count { right: 0; bottom: 0; }
+  .count .stickerBody { width: 104px; height: 95px; }
+  .count .stickerText { font-size: 27px; }
+}
+@media (max-width: 680px) {
+  .faintOrbit { width: 115%; left: -8%; top: 13%; height: 63%; }
+  .sticker { padding: 10px; }
+  .scene { left: -1%; top: 0; }
+  .scene .stickerText { font-size: 25px; text-shadow: 1px 2px 0 var(--ink); }
+  .keep { right: 0; top: 1%; }
+  .keep .stickerText { font-size: 19px; padding: 7px 9px 9px; box-shadow: 2px 3px 0 var(--ink); }
+  .arrow { width: 42px; height: 23px; right: 10%; }
+  .laugh { left: 0; bottom: 2%; }
+  .laugh .stickerText { font-size: 25px; text-shadow: 1px 2px 0 var(--ink); }
+  .laugh .stickerBody::after { font-size: 8px; bottom: -15px; }
+  .count { right: -1%; bottom: 0; }
+  .count .stickerBody { width: 87px; height: 78px; }
+  .count .stickerText { font-size: 24px; }
+  .coming { display: none; }
+  .spark { width: 15px; height: 15px; right: -13px; top: -11px; }
+  .openingWordmark { padding: 0 10px; }
+  .openingEyebrow { margin-bottom: 20px; }
+  .wordmarkStar { right: 4%; top: calc(50% - 86px); }
+  .cutStar { right: 8%; top: 23%; }
+  .openingCorner { left: 18px; font-size: 8px; }
+  .openingIndex { right: 18px; font-size: 8px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sticker, .stickerBody, .spark { transition: none; transform: none !important; }
+  .opening[open] * { animation: none !important; }
+}

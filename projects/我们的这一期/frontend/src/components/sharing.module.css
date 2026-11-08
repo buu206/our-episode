@@ -1,0 +1,33 @@
+.fields { min-width: 0; margin: 18px 0; padding: 0; border: 0; display: grid; gap: 18px; }
+.back { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; width: fit-content; color: #807268; font-size: 13px; }
+.brand { color: #352b24; font-size: 20px; font-weight: 850; letter-spacing: -.04em; }
+.check { display: flex; align-items: flex-start; gap: 10px; font-size: 14px; }
+.check input { flex-shrink: 0; margin-top: 3px; }
+.invitationReveal { border-color: #e5b9a6; background: #fff9f2; }
+.invitationReveal .field { margin: 12px 0; }
+.shareList { list-style: none; padding: 0; margin: 24px 0 0; display: grid; gap: 20px; }
+.shareCard { min-width: 0; padding: 22px; border: 1px solid #e8e1d8; background: #fffdfa; border-radius: 18px; overflow-wrap: anywhere; }
+.facts { margin: 16px 0; display: grid; gap: 8px; font-size: 14px; }
+.facts > div { display: flex; gap: 16px; }
+.facts dt { flex: 0 0 5em; color: #81776c; }
+.facts dd { margin: 0; min-width: 0; }
+.update { margin-top: 18px; padding-top: 14px; border-top: 1px solid #ece5dc; }
+.update summary { cursor: pointer; color: #82594e; min-height: 44px; display: list-item; padding: 8px 0; font-weight: 650; }
+.update .field { margin: 10px 0; }
+.watch { width: min(100%, 1064px); margin: 0 auto; padding: 28px 32px 50px; }
+.watch main { display: grid; gap: 24px; }
+.watchVideo { display: block; width: 100%; max-height: 70dvh; aspect-ratio: 16 / 9; background: #211e1a; border-radius: 18px; object-fit: contain; }
+.watchHeader { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 14px; margin-bottom: 24px; }
+.login { max-width: 620px; margin: 0 auto; }
+.login form { display: grid; gap: 18px; margin-top: 22px; }
+.scope { font-size: 14px; color: #746b60; }
+.scope p + p { margin-top: 10px; }
+.unavailable { padding: 35px 22px; border: 1px dashed #d8c8ba; border-radius: 18px; background: #fbf6ef; }
+@media (max-width: 600px) {
+  .watch { padding: 18px 16px 35px; }
+  .watch main { gap: 18px; }
+  .shareCard { padding: 17px; }
+  .facts > div { gap: 10px; }
+  .watchVideo { border-radius: 12px; }
+  .check { font-size: 13px; }
+}

@@ -1,0 +1,44 @@
+{
+  "validator": "existing Pillow-bundled FreeType via Python ctypes; no installation",
+  "format": "woff2",
+  "family_names": [
+    "Noto Sans SC Black"
+  ],
+  "os2_weight_class": 900,
+  "variable_font": false,
+  "requested_characters": 24,
+  "cmap_characters": 25,
+  "all_requested_characters_present": true,
+  "additional_character": "U+0020 SPACE (automatically retained by Google Fonts subset service)",
+  "each_requested_character_rasterized_at_80px": true,
+  "copyright_metadata": [
+    "(c) 2014-2021 Adobe (http://www.adobe.com/), with Reserved Font Name 'Source'."
+  ],
+  "unicode_codepoints": [
+    "U+0020",
+    "U+4E00",
+    "U+4E0D",
+    "U+4E3B",
+    "U+4ECA",
+    "U+4EEC",
+    "U+4F60",
+    "U+5356",
+    "U+5916",
+    "U+597D",
+    "U+5F69",
+    "U+6211",
+    "U+6392",
+    "U+662F",
+    "U+665A",
+    "U+6709",
+    "U+671F",
+    "U+6CA1",
+    "U+6D3B",
+    "U+70B9",
+    "U+751F",
+    "U+7684",
+    "U+89D2",
+    "U+8BF4",
+    "U+8FD9"
+  ]
+}

@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>受控分享 · 我们的这一期</title><link rel="stylesheet" href="/collaboration.css"></head><body>
+<header><strong>我们的这一期</strong><span class="badge">发起人 · 本机分享验收</span><a id="back" href="/">返回剪辑工作台</a></header>
+<main><h1>把确认过的这一版分享出去</h1><p id="episode-name" class="muted">正在读取本期节目…</p>
+<p id="message" class="status" role="status" aria-live="polite"></p>
+<div class="notice">当前仅在这台电脑验证分享流程。每个观看邀请只开放指定成片，不开放原片、采访稿件或编辑权限。持码者能观看，不代表实名核验；请勿转发私人邀请。可播放的内容可能被保存或录屏，关闭分享不能收回设备已经接收的副本。</div>
+<section id="login-needed" class="section" hidden><h2>先进入本期工作台</h2><p>请登录工作台，从对应节目打开分享页。独立演示入口的公开登录码是 demo。</p><a href="/">打开工作台</a></section>
+<div id="workspace" hidden>
+<section class="section"><h2>1. 创建观看邀请</h2><p class="muted">只可分享完整预览并确认过的版本。每个称呼单独创建，方便单独关闭；到期或关闭后需要重新创建。</p>
+<form id="share-form"><div class="grid">
+<div><label for="share-label">给谁看（用于你辨认）</label><input id="share-label" maxlength="40" required placeholder="例如：小林"></div>
+<div><label for="share-days">有效期</label><select id="share-days"><option value="1">1天</option><option value="3">3天</option><option value="7" selected>7天</option></select></div>
+<div class="full"><label for="share-version">分享哪个已确认版本</label><select id="share-version" required></select></div></div>
+<p id="version-help" class="muted"></p>
+<label><input id="scope-confirm" type="checkbox" required>我已核对这个版本，确认仅通过此邀请开放这份成片的观看权限。</label>
+<button id="create-share" class="primary" type="submit">确认版本并创建邀请</button></form>
+<div id="new-share" class="notice" hidden><h3>观看邀请已创建</h3><p>代码只在本次创建后显示。请自行保管；本应用不代你发送消息。</p><label for="share-code">本次观看代码</label><input id="share-code" type="password" readonly autocomplete="off">
+<div class="row actions"><button id="copy-share">复制本机观看链接</button><button id="open-viewer">在新标签打开观看入口</button><button id="hide-code">收起代码</button></div></div>
+</section>
+<section class="section"><div class="row"><h2>2. 已创建的分享</h2><button id="refresh">刷新分享状态</button></div>
+<p class="muted">新成片不会自动替换已有分享。更新时需再次核对版本和影响；更新不会延长有效期，旧媒体地址随更新失效。内容有异议或被撤回时分享受限，处理后也需你明确更新才能恢复。</p><div id="shares"></div></section>
+</div></main>
+<dialog id="confirm-dialog"><h2 id="confirm-title"></h2><p id="confirm-text"></p><div class="row"><button id="confirm-no">取消</button><button id="confirm-yes" class="primary">确认</button></div></dialog>
+<script src="/collaboration-common.js"></script><script src="/sharing.js"></script></body></html>

@@ -1,0 +1,20 @@
+.shell { min-height: 100vh; background: #f8f5ef; }
+.header { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; padding: 20px max(24px, calc((100vw - 1192px) / 2)); border-bottom: 1px solid #e9e2d9; }
+.header :global(.portal-brand) { color: #27221f; font-size: 20px; font-weight: 850; text-decoration: none; }
+.header > span { color: #847b75; font-size: 12px; }
+.header > button { margin-left: auto; }
+.main { padding: 12px 24px 60px; }
+.main > :global(.notice) { margin: 12px 0; }
+.main :global(.portal-actions) { display: flex; flex-wrap: wrap; gap: 10px; margin: 16px 0; }
+.main :global(.check-field) { display: flex; align-items: flex-start; gap: 10px; margin: 14px 0; line-height: 1.65; }
+.main :global(.check-field input) { width: 18px; height: 18px; flex: 0 0 auto; margin-top: 5px; }
+.workspace { margin-top: 24px; }
+.fields { display: grid; gap: 16px; margin: 0; padding: 0; border: 0; min-width: 0; }
+.workspace :global(.portal-actions) { display: flex; flex-wrap: wrap; gap: 10px; margin: 16px 0; }
+.workspace :global(.check-field) { display: flex; align-items: flex-start; gap: 10px; margin: 14px 0; line-height: 1.65; }
+.workspace :global(.check-field input) { flex: 0 0 auto; margin-top: 6px; }
+.workspace details { margin: 16px 0; }
+.workspace summary { cursor: pointer; font-weight: 650; padding: 10px 0; }
+.workspace progress { display: block; width: min(100%, 420px); margin: 8px 0; }
+.workspace :global(.portal-item) { border-top: 1px solid #e2d9ce; padding: 18px 0; }
+@media (max-width: 600px) { .header { padding: 16px; gap: 10px; }.header > span { order: 3; width: 100%; }.main { padding: 8px 16px 40px; }.workspace :global(.portal-section-title) { flex-wrap: wrap; } }
