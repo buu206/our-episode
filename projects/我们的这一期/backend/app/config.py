@@ -22,10 +22,7 @@ class Settings:
     def from_env(cls):
         load_dotenv(BACKEND / '.env', override=False)
         code = os.getenv('APP_INVITE_CODE', '')
-        cloud = {k: os.getenv(k, '') for k in ('MODEL_API_KEY', 'MODEL_BASE_URL', 'MODEL_NAME')}
-        cloud['ASR_MODEL'] = os.getenv('ASR_MODEL', 'fun-asr-flash-2026-06-15')
-        cloud['TTS_MODEL'] = os.getenv('TTS_MODEL', 'qwen3-tts-flash')
-        for name in ('CLOUD_ENABLED', 'CLOUD_RETENTION_VERIFIED', 'CLOUD_REGION_VERIFIED'):
-            cloud[name] = os.getenv(name, '').lower() == 'true'
+        from .services.provider_config import cloud_configuration
+        cloud = cloud_configuration(os.environ)
         return cls(data_dir=Path(os.getenv('APP_DATA_DIR', str(PRODUCT / 'data'))).resolve(),
                    invites={code: 'local-owner'} if code else {}, cloud=cloud)

@@ -139,6 +139,10 @@ def inspect_share(db, repo, share, *, expected_revision=None, keep_media=False):
     Every API caller must exit its transaction before raising the returned error.
     An invalid snapshot is a durable latch, never an automatic temporary check.
     """
+    from .retention import unavailable
+    if unavailable(db, share.episode_id):
+        share.state, share.closed_at = 'closed', time.time()
+        return None, DomainError('EPISODE_EXPIRED', '本期已到保存期限或已删除。', 410)
     touch_expiry(share)
     fault = state_error(share)
     if fault:
@@ -175,6 +179,11 @@ def share_out(share):
 def find_operation(db, owner_id, client_request_id, kind, fingerprint):
     row = db.scalars(select(ShareOperation).where(ShareOperation.owner_id == owner_id,
                      ShareOperation.client_request_id == str(client_request_id))).first()
+    if row:
+        from .retention import require_available
+        share = db.get(Share, row.share_id)
+        if share:
+            require_available(db, share.episode_id)
     if row and (row.kind != kind or row.request_hash != fingerprint):
         raise DomainError("IDEMPOTENCY_CONFLICT", "此请求编号已经用于不同的分享操作。", 409)
     return row
@@ -210,7 +219,9 @@ def byte_range(value, size):
 def stream_is_active(repo, share_id, revision):
     with repo.factory() as db:
         share = db.get(Share, share_id)
-        return bool(share and share.state == "active" and share.revision == revision and share.expires_at > time.time())
+        from .retention import unavailable
+        return bool(share and not unavailable(db, share.episode_id) and share.state == "active"
+                    and share.revision == revision and share.expires_at > time.time())
 
 
 def media_chunks(repo, share_id, revision, handle, start, end):

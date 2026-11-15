@@ -17,7 +17,7 @@ export function Notice({ children, tone = 'info', className = '' }: { children: 
   return <div className={`notice ${tone} ${className}`} role={tone === 'error' ? 'alert' : 'status'}><Icon size={18} aria-hidden="true" /><div>{children}</div></div>;
 }
 
-export function Dialog({ open, onClose, title, children }: { open: boolean; onClose: () => void; title: string; children: ReactNode }) {
+export function Dialog({ open, onClose, title, children, className = '' }: { open: boolean; onClose: () => void; title: string; children: ReactNode; className?: string }) {
   const ref = useRef<HTMLDialogElement>(null);
   const titleId = useId();
   const { allowed } = useMediaAccess();
@@ -29,7 +29,7 @@ export function Dialog({ open, onClose, title, children }: { open: boolean; onCl
     if ((!open || !allowed) && dialog.open) dialog.close();
     return () => { if (dialog.open) dialog.close(); if (open && allowed && trigger?.isConnected) trigger.focus(); };
   }, [open, allowed]);
-  return <dialog ref={ref} className="dialog" aria-labelledby={titleId} onCancel={event => { event.preventDefault(); onClose(); }}>
+  return <dialog ref={ref} className={`dialog ${className}`} aria-labelledby={titleId} onCancel={event => { event.preventDefault(); onClose(); }}>
     <div className="dialog-heading"><h2 id={titleId}>{title}</h2><Button variant="ghost" aria-label="关闭弹窗" onClick={onClose}><X size={20} /></Button></div>
     <div className="dialog-content">{children}</div>
   </dialog>;
@@ -40,6 +40,7 @@ export function MediaPlayer({ src, title, start, end, className = '', onEnded, o
   const [visible, setVisible] = useState(true);
   const [retrying, setRetrying] = useState(false);
   const [retryError, setRetryError] = useState('');
+  const [dimensions, setDimensions] = useState<{ key: string; width: number; height: number } | null>(null);
   const access = useMediaAccess();
   const videoRef = useRef<HTMLVideoElement>(null);
   const mounted = useRef(false);
@@ -70,9 +71,9 @@ export function MediaPlayer({ src, title, start, end, className = '', onEnded, o
     finally { if (mounted.current) setRetrying(false); }
   }
   return <figure className={`media-player ${className}`}>
-    <div className="media-screen">
+    <div className="media-screen" style={dimensions?.key === mediaKey ? { aspectRatio: `${dimensions.width} / ${dimensions.height}`, ...(dimensions.width < dimensions.height ? { width: `min(100%, calc(var(--media-portrait-height, 60dvh) * ${dimensions.width / dimensions.height}))`, marginInline: "auto" } : {}) } : undefined}>
       {safe && allowed && failedSrc !== mediaKey ? <video ref={videoRef} key={`${mediaKey}:${start}:${end}`} aria-label={title} src={safe} controls playsInline preload="metadata"
-        onLoadedMetadata={event => { delivered.current = false; const video = event.currentTarget; if (start !== undefined) video.currentTime = Math.max(0, Math.min(start, video.duration)); onReady?.(); }}
+        onLoadedMetadata={event => { delivered.current = false; const video = event.currentTarget; if (video.videoWidth > 0 && video.videoHeight > 0) setDimensions({ key: mediaKey, width: video.videoWidth, height: video.videoHeight }); if (start !== undefined) video.currentTime = Math.max(0, Math.min(start, video.duration)); onReady?.(); }}
         onPlay={() => { delivered.current = false; }}
         onTimeUpdate={event => { const video = event.currentTarget; onProgress?.(video.currentTime, video.duration); if (end !== undefined && video.currentTime >= end) { video.pause(); finish(); } }}
         onEnded={finish} onError={() => setFailedSrc(mediaKey)} /> : <div className="media-empty"><Play size={40} strokeWidth={1.3} aria-hidden="true" /><strong>{safe ? allowed ? '暂时无法播放这一版' : '媒体已暂停' : '这里，是这一期的主场'}</strong><span>{safe ? allowed ? '访问权限或文件状态可能已变化，请重新核对后播放。' : '回到页面后，先重新核对权限与素材状态。' : '选择素材或生成成片后，在这里预览。'}</span>{safe && allowed && <Button onClick={() => void retry()} busy={retrying}>重新核对并加载视频</Button>}</div>}
@@ -84,6 +85,6 @@ export function MediaPlayer({ src, title, start, end, className = '', onEnded, o
 export function ModeBanner({ status }: { status: Status | null }) {
   if (!status) return null;
   if (status.model_mode === 'demo') return <div className="mode-banner"><Clapperboard size={16} aria-hidden="true" /><span><strong>本机流程演示</strong> · 固定结果，非真实 AI；提示音非人声旁白</span></div>;
-  if (!status.workflow_enabled) return <div className="mode-banner"><Info size={16} aria-hidden="true" /><span><strong>本机制作</strong> · 可手动剪接，AI 暂未接入</span></div>;
+  if (!status.workflow_enabled) return <div className="mode-banner"><Info size={16} aria-hidden="true" /><span><strong>本机制作</strong> · 可手动剪接，AI 按本期授权启用</span></div>;
   return null;
 }

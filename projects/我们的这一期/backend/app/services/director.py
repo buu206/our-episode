@@ -1,4 +1,4 @@
-"""Guarded text proposals from human-checked evidence; no media analysis yet.
+"""Guarded text proposals from user-approved source notes; no media analysis here.
 
 The caller owns persisted authorisation, evidence confirmation and budget records.
 It must reserve ``required_reservation_yuan`` before supplying a reservation whose
@@ -15,11 +15,14 @@ import re
 from collections.abc import Callable
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlsplit
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
+
+from .editing import EditSegment, validate_director_segments, validate_transitions
+from .source_windows import source_windows
 
 
 class DirectorError(Exception):
@@ -56,11 +59,42 @@ class Span(_StrictModel):
         return self
 
 
+class InputSpan(Span):
+    # Old, untyped comparison fixtures remain readable. New production input
+    # carries both fields so a static observation cannot impersonate speech.
+    id: str | None = Field(default=None, min_length=1, max_length=80)
+    kind: Literal["visual", "speech", "continuity"] | None = None
+
+    @model_validator(mode="after")
+    def identifiable(self) -> InputSpan:
+        if (self.id is None) != (self.kind is None) or self.id is not None and not self.id.strip():
+            raise ValueError("typed evidence needs both a nonblank id and kind")
+        return self
+
+
+class EditPlan(_StrictModel):
+    segments: list[EditSegment] = Field(min_length=1, max_length=30)
+    narration_text: str = Field(max_length=120)
+
+    @model_validator(mode="after")
+    def bounded_duration(self) -> EditPlan:
+        validate_transitions(self.segments)
+        from .editorial_plan import compile_editorial
+        compile_editorial([s.model_dump() for s in self.segments])
+        # Existing renderer reserves up to 30 seconds for a separate voice intro.
+        limit = 59.9 if self.narration_text.strip() else 90
+        if sum(item.end - item.start for item in self.segments) > limit + 1e-9:
+            raise ValueError("edit plan exceeds duration limit")
+        return self
+
+
 class Direction(_StrictModel):
     id: str = Field(min_length=1, max_length=80, pattern=r"^[A-Za-z0-9_-]+$")
     title: str = Field(min_length=1, max_length=120)
     summary: str = Field(min_length=1, max_length=2000)
     evidence: list[Span] = Field(min_length=1, max_length=40)
+    # None is accepted only to read pre-existing directions/demo fixtures.
+    edit_plan: EditPlan | None = None
 
     @field_validator("title", "summary")
     @classmethod
@@ -88,6 +122,14 @@ class DirectionResult(_StrictModel):
         if len({item.id for item in self.directions}) != len(self.directions):
             raise ValueError("direction ids must be unique")
         return self
+
+
+class PlannedDirection(Direction):
+    edit_plan: EditPlan
+
+
+class PlannedDirectionResult(DirectionResult):
+    directions: list[PlannedDirection] = Field(max_length=3)
 
 
 def _assets_valid(assets: dict[str, float]) -> None:
@@ -118,7 +160,7 @@ def _invalid_constant(_: str) -> None:
     raise ValueError("non-finite JSON number")
 
 
-def parse_result(content: str, assets: dict[str, float]) -> DirectionResult:
+def parse_result(content: str, assets: dict[str, float], *, require_edit_plan: bool = False) -> DirectionResult:
     """Accept only a JSON object or a single complete outer JSON code fence.
 
     Schema and time bounds are deterministic checks, not proof of factual prose.
@@ -135,13 +177,101 @@ def parse_result(content: str, assets: dict[str, float]) -> DirectionResult:
         text = match.group(1)
     try:
         data = json.loads(text, object_pairs_hook=_unique_object, parse_constant=_invalid_constant)
-        result = DirectionResult.model_validate(data)
-    except (ValueError, TypeError, RecursionError, ValidationError):
+        result_type = PlannedDirectionResult if require_edit_plan else DirectionResult
+        result = result_type.model_validate(data)
+    except ValidationError as exc:
+        # Report only allowlisted schema locations/types. Never include a
+        # provider value, arbitrary extra-field name, prose, or full response.
+        fields = set(DirectionResult.model_fields) | set(Direction.model_fields) | set(EditPlan.model_fields) | set(EditSegment.model_fields)
+        from .editorial_plan import EditorialBeat
+        fields |= set(EditorialBeat.model_fields)
+        first = exc.errors(include_input=False, include_context=False, include_url=False)[0]
+        location = '.'.join(str(x) if type(x) is int else x if x in fields else '?' for x in first['loc'])
+        kind = first['type'] if re.fullmatch(r'[a-z_]{1,60}', first['type']) else 'invalid'
+        raise DirectorError("INVALID_MODEL_OUTPUT", f"模型返回未通过结构校验（{location or 'result'}：{kind}）。") from None
+    except (ValueError, TypeError, RecursionError):
         raise DirectorError("INVALID_MODEL_OUTPUT", "模型返回未通过结构校验。") from None
     for direction in result.directions:
         for span in direction.evidence:
             _check_span(span, assets)
+        if require_edit_plan and direction.edit_plan is None:
+            raise DirectorError("INVALID_MODEL_OUTPUT", "模型提案缺少剪辑方案。")
+        if direction.edit_plan is not None:
+            for segment in direction.edit_plan.segments:
+                if segment.subtitle_edits:
+                    raise DirectorError('INVALID_MODEL_OUTPUT','模型不能代替用户确认或修改字幕。')
+                if not any(source.asset_id == segment.asset_id and source.start <= segment.start
+                           and source.end >= segment.end for source in direction.evidence):
+                    raise DirectorError("UNGROUNDED_EVIDENCE", "剪辑片段超出该方向引用的证据范围。")
     return result
+
+
+def prepare_input(evidence: list[dict], assets: dict[str, float], background: str = "") -> str:
+    """One input contract shared by live proposals and offline comparison packs."""
+    _assets_valid(assets)
+    if not isinstance(evidence, list) or not evidence:
+        raise DirectorError("EVIDENCE_REQUIRED", "需要用户同意用于创作的素材依据。")
+    try:
+        if len(evidence) > 100 or not isinstance(background, str) or len(background) > 4000:
+            raise ValueError("input limit")
+        spans = _input_spans(evidence)
+        for span in spans:
+            _check_span(span, assets)
+        payload = {"verified_evidence": [span.model_dump(exclude_none=True) for span in spans],
+                   "background_context": background}
+        windows = source_windows(evidence)
+        if windows:
+            payload['source_windows'] = windows
+        text = json.dumps(payload, ensure_ascii=False)
+        if len(text.encode("utf-8")) > 100_000:
+            raise ValueError("input limit")
+        return text
+    except (ValueError, TypeError, ValidationError):
+        raise DirectorError("INVALID_EVIDENCE", "素材依据格式或长度无效。") from None
+
+
+def _input_spans(evidence: list[dict]) -> list[InputSpan]:
+    spans = [InputSpan.model_validate(item) for item in evidence]
+    if any(span.kind == "continuity" for span in spans):
+        raise ValueError("source windows must be derived, never submitted as facts")
+    ids = [span.id for span in spans if span.id is not None]
+    if ids and (len(ids) != len(spans) or len(set(ids)) != len(ids)):
+        raise ValueError("typed evidence needs unique ids for every item")
+    return spans
+
+
+def check_grounding(result: DirectionResult, evidence: list[dict]) -> None:
+    try:
+        spans = _input_spans(evidence)
+    except (ValueError, TypeError, ValidationError):
+        raise DirectorError("INVALID_EVIDENCE", "素材依据格式或标识无效。") from None
+    spans += [InputSpan.model_validate(row) for row in source_windows(evidence)]
+    by_id = {span.id: span for span in spans if span.id is not None}
+    for direction in result.directions:
+        for span in direction.evidence:
+            if not any(source.asset_id == span.asset_id and source.start <= span.start
+                       and source.end >= span.end for source in spans):
+                raise DirectorError("UNGROUNDED_EVIDENCE", "提案引用了未获确认用于创作的素材区间。")
+        if direction.edit_plan is None:
+            continue  # Existing stored proposals without explicit edit plans.
+        if not by_id and any(s.editorial for s in direction.edit_plan.segments):
+            raise DirectorError('INVALID_EDIT_PLAN', '编导安排需要带标识的来源依据。')
+        for segment in direction.edit_plan.segments:
+            for evidence_id in segment.evidence_ids:
+                source = by_id.get(evidence_id)
+                if (source is None or not any(reference.asset_id == source.asset_id
+                                   and min(reference.end, source.end) > max(reference.start, source.start)
+                                   for reference in direction.evidence)):
+                    raise DirectorError("UNGROUNDED_EVIDENCE", "剪辑片段引用了本方向以外的来源标识。")
+        if by_id:
+            try:
+                # This same contract also protects subsequent manual edits and
+                # rendering; all overlapping speech is checked, not just IDs
+                # the model chose to disclose in its own references.
+                validate_director_segments(direction.edit_plan.segments,
+                                           evidence)
+            except ValueError as exc:
+                raise DirectorError("INVALID_EDIT_PLAN", str(exc)) from None
 
 
 class CloudDirector:
@@ -196,7 +326,7 @@ class CloudDirector:
     def ready(self) -> tuple[bool, str]:
         try:
             self._guard()
-            return True, "仅人工核对证据的文本提案接口就绪；每次调用仍需预算许可。"
+            return True, "素材依据的文本提案接口就绪；每次调用仍需预算许可。"
         except DirectorError as exc:
             return False, exc.message
 
@@ -237,21 +367,7 @@ class CloudDirector:
     async def propose(self, evidence: list[dict], assets: dict[str, float],
                       background: str = "", *, reservation: Any = None) -> dict:
         self._guard()
-        _assets_valid(assets)
-        if not isinstance(evidence, list) or not evidence:
-            raise DirectorError("EVIDENCE_REQUIRED", "需要用户核对的事实或转写证据；文件名和时长不足以生成方向。")
-        try:
-            if len(evidence) > 100 or not isinstance(background, str) or len(background) > 4000:
-                raise ValueError("input limit")
-            spans = [Span.model_validate(item) for item in evidence]
-            for span in spans:
-                _check_span(span, assets)
-            user_text = json.dumps({"verified_evidence": [span.model_dump() for span in spans],
-                                    "background_context": background}, ensure_ascii=False)
-            if len(user_text.encode("utf-8")) > 100_000:
-                raise ValueError("input limit")
-        except (ValueError, TypeError, ValidationError):
-            raise DirectorError("INVALID_EVIDENCE", "人工核对证据格式或长度无效。") from None
+        user_text = prepare_input(evidence, assets, background)
         unsent = {**self._usage(None, None, 0, False), "cost_yuan": 0.0, "cost_status": "not_sent"}
         await self._check_budget(reservation, unsent)
         try:
@@ -297,12 +413,8 @@ class CloudDirector:
                         choice = envelope["choices"][0]
                         if choice.get("finish_reason") != "stop":
                             raise ValueError("incomplete response")
-                        result = parse_result(choice["message"]["content"], assets)
-                        for direction in result.directions:
-                            for span in direction.evidence:
-                                if not any(source.asset_id == span.asset_id and source.start <= span.start
-                                           and source.end >= span.end for source in spans):
-                                    raise DirectorError("UNGROUNDED_EVIDENCE", "提案引用了未经用户核对的素材区间。")
+                        result = parse_result(choice["message"]["content"], assets, require_edit_plan=True)
+                        check_grounding(result, evidence)
                     except DirectorError as exc:
                         exc.usage = usage
                         raise

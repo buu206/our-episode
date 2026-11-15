@@ -1,4 +1,5 @@
 'use client';
+import { BrandMark } from './brand-mark';
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
@@ -163,7 +164,7 @@ export function Dashboard() {
   return <div className="dashboard premiere-home">
     <section className="premiere-hero" aria-labelledby="premiere-title">
       <p className="premiere-kicker" title="示例节目期数与场景">第 07 期 · 周五夜场</p>
-      <h1 className="premiere-title" id="premiere-title">我们的<span>这一期</span></h1>
+      <h1 className="premiere-title" id="premiere-title"><BrandMark className="zaichang-hero-mark" />在<span>场</span></h1>
       <p className="premiere-theme">说好今晚不点外卖</p>
       <p className="premiere-description">熟人聚会一键变综艺。选主题、喊朋友、开拍——片头花字、反应镜头、名场面切片，AI 帮你包圆。</p>
       <div className="premiere-cast" aria-label="示例节目角色">{['阿哲', '小满', '老周', 'Nana', '豆豆'].map((name, index) => <div className="cast-person" key={name} title={`${name} · 原创生成的示例角色，并非你的节目参与者`}>
@@ -211,7 +212,7 @@ export function Dashboard() {
         const time = new Date(ep.created_at);
         return <article key={ep.id} className="episode-card"><Link href={`/episodes/${ep.id}?step=${version ? 'preview&version=' + version.id : 'materials'}`} aria-label={`继续制作：${ep.title}`} onClick={event => { if (!allowLeave()) event.preventDefault(); }}>
           <div className={`episode-cover cover-${index % 3}`}>
-            {version?.media_url && access.allowed && mediaFresh ? <video key={access.revision} src={version.media_url} muted playsInline preload="metadata" tabIndex={-1} aria-hidden="true" /> : <div className="cover-art" aria-hidden="true"><Film size={58} strokeWidth={1.2} /><span>我们的<br />这一期</span></div>}
+            {version?.media_url && access.allowed && mediaFresh ? <video key={access.revision} src={version.media_url} muted playsInline preload="metadata" tabIndex={-1} aria-hidden="true" /> : <div className="cover-art" aria-hidden="true"><Film size={58} strokeWidth={1.2} /><span>在场</span></div>}
             <span className="episode-number">EP. {String((episodes?.length || 0) - index).padStart(2, '0')}</span><span className="cover-label">{episodeLabel(ep)}</span>
           </div><div className="episode-card-body"><h3>{ep.title}</h3><p>{ep.assets.length} 段可用素材 · {ep.versions.length} 个版本</p><div className="card-bottom"><span>{Number.isNaN(time.getTime()) ? '最近制作' : time.toLocaleDateString('zh-CN')}</span><span>继续制作<ArrowRight size={16} /></span></div></div>
         </Link></article>;

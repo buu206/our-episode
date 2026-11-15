@@ -1,0 +1,2 @@
+# Optional CPU face geometry; keep separate from the main API dependencies.
+mediapipe==0.10.32

@@ -20,3 +20,7 @@ data/
 *.log
 .coverage
 htmlcov/
+# Private development evidence is not part of public source releases.
+projects/我们的这一期/docs/在场-项目经历-模拟上线版.md
+projects/我们的这一期/docs/evidence/**
+projects/我们的这一期/docs/设计参考/**/assets/*.mp4

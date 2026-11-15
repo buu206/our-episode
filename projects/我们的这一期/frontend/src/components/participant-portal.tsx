@@ -1,6 +1,8 @@
 'use client';
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import Link from 'next/link';
+import { BrandMark } from './brand-mark';
+import { ProductionChrome } from './production-chrome';
 import { api, AppError, setCsrf } from '@/lib/api';
 import type { Invitation, Objections, ParticipantAuth, Submissions } from '@/lib/collaboration-types';
 import { Button, Dialog, MediaAccessContext, Notice } from './ui';
@@ -79,7 +81,7 @@ export default function ParticipantPortal() {
     } catch (cause) {
       if (!active()) return false;
       setChecking(false); setFrozen(true); closeConfirm();
-      if (cause instanceof AppError && cause.status === 401) { clearIdentity(); setError(''); }
+      if (cause instanceof AppError && (cause.status === 401 || cause.code === 'EPISODE_EXPIRED')) { clearIdentity(); setError(cause.code === 'EPISODE_EXPIRED' ? cause.message : ''); }
       else { setError(cause instanceof Error ? cause.message : '暂时无法读取你的任务。'); setAttempt(value => value + 1); }
       return false;
     } finally { if (generation === readGeneration.current) reading.current = false; }
@@ -161,8 +163,9 @@ export default function ParticipantPortal() {
     finally { if (generation === writeGeneration.current) { working.current = false; if (mounted.current) setBusy(false); } }
   }
   const allowed = !!auth && !!data && !frozen && !incoming;
-  return <div className={`portal-shell ${styles.shell}`}>
-    <header className={`portal-header ${styles.header}`}><Link className="portal-brand" href="/" onClick={event => { if ((dirty || busy) && !window.confirm('未保存的输入会丢失，已保存草稿保留。返回开场？')) event.preventDefault(); }}>我们的这一期</Link><span>朋友入口 · 仅受邀范围</span>{auth && <Button disabled={busy || frozen} onClick={() => void logout()}>退出朋友身份</Button>}</header>
+  return <div className={`production-shell portal-shell ${styles.shell}`}>
+    <ProductionChrome label="朋友入口" />
+    <header className={`portal-header ${styles.header}`}><Link className="portal-brand zaichang-brand-link" href="/" onClick={event => { if ((dirty || busy) && !window.confirm('未保存的输入会丢失，已保存草稿保留。返回开场？')) event.preventDefault(); }}><BrandMark />在场</Link><span>朋友入口 · 仅受邀范围</span>{auth && <Button disabled={busy || frozen} onClick={() => void logout()}>退出朋友身份</Button>}</header>
     <main id="main" className={`portal-main portal-page ${styles.main}`}>
       <section className="portal-hero"><div><span className="portal-kicker">YOUR SIDE OF THE STORY</span><h1>补充你的<span>那一面</span></h1><p>你确认自己的表达，发起人决定是否采用。</p></div></section>
       {error && <Notice tone="error">{error}<Button onClick={() => void refresh(true)} disabled={busy}>重新核对任务</Button></Notice>}

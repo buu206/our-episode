@@ -32,11 +32,21 @@ def accepting_new(invitation):
 
 
 def require_new(invitation):
+    from sqlalchemy.orm import object_session
+    from .retention import require_available
+    db = object_session(invitation)
+    if db is not None:
+        require_available(db, invitation.episode_id)
     if not accepting_new(invitation):
         raise DomainError("INVITATION_CLOSED", "邀请已关闭或过期；仍可管理已提交内容与本人权益。", 409)
 
 
 def owned_participant(db, participant_id, model, item_id):
+    from .retention import require_available
+    person = db.get(Participant, participant_id)
+    invitation = db.get(Invitation, person.invite_id) if person else None
+    if invitation:
+        require_available(db, invitation.episode_id)
     row = db.get(model, item_id)
     if row is None or row.participant_id != participant_id:
         raise DomainError("NOT_FOUND", "内容不存在或无权访问。", 404)
@@ -119,6 +129,8 @@ def _fixed_expression(invitation, submission, revision):
 
 
 def guard_asset(db, asset, segment=None):
+    from .retention import require_available
+    require_available(db, asset.episode_id)
     if asset.deleted:
         raise DomainError("SOURCE_REMOVED", "引用素材已删除。", 409)
     start, end = (0, asset.duration) if segment is None else (segment["start"], segment["end"])
@@ -245,6 +257,8 @@ def validate_adoption(db, adoption):
 def _job_context(db, job):
     if not job or job.state != "running" or job.kind not in COLLAB_JOB_KINDS:
         raise DomainError("JOB_INACTIVE", "协作任务已失效。", 409)
+    from .retention import require_available
+    require_available(db, job.episode_id)
     if job.kind == "context_preview":
         row = db.get(Invitation, job.payload.get("invite_id"))
         if not row or row.owner_id != job.owner_id or row.episode_id != job.episode_id:

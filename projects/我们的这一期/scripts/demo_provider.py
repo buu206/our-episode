@@ -36,8 +36,57 @@ class DemoServices:
 
     is_real = False
 
+    def profile(self):
+        return {"mode": "demo-fixture"}
+
+    def director_estimate(self):
+        return 0.01
+
+    def vision_estimate(self, prepared):
+        return prepared.required_reservation_yuan
+
     def ready(self):
         return True, DEMO_REASON
+
+    def chat_ready(self, context=None):
+        return True, DEMO_REASON
+
+    def voice_ready(self):
+        return True, DEMO_REASON
+
+    async def director_voice(self, chunks, reservation, permit, context):
+        await self._permit(permit, reservation, amount=0)
+        return self._result([{'asset_id': chunk.asset_id, 'start': chunk.offset,
+                             'end': chunk.offset + chunk.duration,
+                             'text': '演示占位，未识别录音。'} for chunk in chunks])
+
+    def chat_estimate(self, context=None):
+        return 0.01
+
+    def directions_ready(self, context=None):
+        return self.ready()
+
+    def scoped_director_estimate(self, context=None):
+        return self.director_estimate()
+
+    async def scoped_directions(self, evidence, assets, background, reservation, permit, context):
+        return await self.directions(evidence, assets, background, reservation, permit)
+
+    async def director_chat(self, context, reservation, permit):
+        await self._permit(permit, reservation)
+        question = context.get('question', '')
+        available = context.get('available_actions', [])
+        action = None
+        if '旁白' in question and 'revise_narration' in available:
+            action = {'kind': 'revise_narration', 'title': '演示：另存短旁白草案',
+                      'explanation': '固定测试建议。确认后只另存草案，不生成语音或覆盖原片。',
+                      'narration_text': '在场，开拍！'}
+        elif '方案' in question and 'revise_directions' in available:
+            action = {'kind': 'revise_directions', 'title': '演示：生成新方向候选',
+                      'explanation': '固定测试建议。确认后按现有已核对区间生成演示候选。',
+                      'requirement': '保留完整原声和连续动作，减少零碎镜头。'}
+        return self._result({'reply': '这是固定流程演示，不是真实AI回答。这里用于核对多轮消息保存、修改建议确认与另存草案。',
+                             'action': action})
 
     @staticmethod
     def _result(result):
@@ -48,8 +97,8 @@ class DemoServices:
         }}
 
     @staticmethod
-    async def _permit(permit, reservation, digest=None):
-        allowed = permit(reservation, 0.01, digest) if digest is not None else permit(reservation, 0.01)
+    async def _permit(permit, reservation, digest=None, amount=0.01):
+        allowed = permit(reservation, amount, digest) if digest is not None else permit(reservation, amount)
         if inspect.isawaitable(allowed):
             allowed = await allowed
         if not allowed:

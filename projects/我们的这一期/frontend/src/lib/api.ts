@@ -1,5 +1,7 @@
 import { z } from "zod";
-import { AssetSchema, AuthSchema, EpisodeSchema, EpisodesSchema, ImpactSchema, JobSchema, OkSchema, StatusSchema, VersionSchema, type Asset } from "./types";
+import { DirectorChatStateSchema, DirectorChatActionResultSchema } from "./director-chat";
+import { DIRECTOR_VOICE_MAX_BYTES, DirectorVoiceSchema, DirectorVoicesSchema, DirectorVoiceStatusSchema, type DirectorVoice, type DirectorVoiceConsent } from "./director-voice";
+import { SubtitleTrackSchema, DirectorStateSchema, RetentionSchema, AssetSchema, AuthSchema, EpisodeSchema, EpisodesSchema, ImpactSchema, JobSchema, OkSchema, StatusSchema, VersionSchema, type Asset } from "./types";
 import {
   ParticipantAuthSchema, InvitationSchema, InvitationCreatedSchema, InvitationsSchema, SubmissionSchema,
   SubmissionsSchema, RevisionSchema, ObjectionSchema, ObjectionsSchema, ShareSchema, ShareCreatedSchema,
@@ -26,7 +28,11 @@ export class AppError extends Error {
 }
 export type ApiOptions = { method?: ApiMethod; body?: unknown; signal?: AbortSignal };
 const schemas: Partial<Record<RouteKind, z.ZodType>> = {
-  status: StatusSchema, auth: AuthSchema, ok: OkSchema, episodes: EpisodesSchema, episode: EpisodeSchema,
+  subtitles: SubtitleTrackSchema,
+  directorVoice: DirectorVoiceSchema, directorVoices: DirectorVoicesSchema, directorVoiceStatus: DirectorVoiceStatusSchema,
+  directorChat: DirectorChatStateSchema, directorChatAction: DirectorChatActionResultSchema,
+  directorState: DirectorStateSchema,
+  retention: RetentionSchema, status: StatusSchema, auth: AuthSchema, ok: OkSchema, episodes: EpisodesSchema, episode: EpisodeSchema,
   asset: AssetSchema, impact: ImpactSchema, version: VersionSchema, job: JobSchema,
   participantAuth: ParticipantAuthSchema, invitation: InvitationSchema, invitationCreated: InvitationCreatedSchema,
   invitations: InvitationsSchema, submission: SubmissionSchema, submissions: SubmissionsSchema,
@@ -154,12 +160,25 @@ export function uploadSubmission(fields: UploadSubmissionFields, onProgress?: (s
       ...(fields.question_id == null ? {} : { question_id: fields.question_id }) }, onProgress, signal);
 }
 
+export function uploadDirectorVoice(episodeId: string, file: File, consent: DirectorVoiceConsent,
+  onProgress?: (sent: number, total: number) => void, signal?: AbortSignal): Promise<DirectorVoice> {
+  if (!/^[a-f0-9]{32}$/.test(episodeId) || !/^[A-Za-z0-9_-]{8,80}$/.test(consent.client_id)
+    || consent.confirm_send !== true || consent.accept_unknown_retention !== true) {
+    return Promise.reject(new AppError("INVALID_REQUEST", "请确认这段录音的转写范围后提交。", 422));
+  }
+  if (!/\.(?:webm|m4a|mp4|wav)$/i.test(file.name)) return Promise.reject(new AppError("INVALID_FORMAT", "录音格式不受支持，请改用文字输入。", 422));
+  if (file.size <= 0 || file.size > DIRECTOR_VOICE_MAX_BYTES) return Promise.reject(new AppError("UPLOAD_TOO_LARGE", "录音应在12MB以内，请缩短后重试。", 413));
+  return uploadMultipart<DirectorVoice>(`/episodes/${episodeId}/director/voice`, file,
+    { client_id: consent.client_id, confirm_send: "true", accept_unknown_retention: "true" }, onProgress, signal);
+}
+
 function uploadMultipart<T>(path: string, file: File, fields: Record<string, string>,
   onProgress?: (sent: number, total: number) => void, signal?: AbortSignal): Promise<T> {
   return new Promise((resolve, reject) => {
     const contract = routeContract(path, "POST");
     if (!contract?.upload) { reject(new AppError("INVALID_API_PATH", "上传地址无效。", 400)); return; }
     const { role } = contract;
+    const receipt = contract.kind === "directorVoice" ? "这段语音的提交状态" : "素材列表";
     const { csrf, epoch: requestEpoch } = sessions[role];
     if (!csrf) { reject(new AppError(role === "owner" ? "AUTH_REQUIRED" : `${role.toUpperCase()}_AUTH_REQUIRED`, "请重新登录后上传。", 401)); return; }
     if (signal?.aborted) { reject(abortError(true)); return; }
@@ -175,7 +194,7 @@ function uploadMultipart<T>(path: string, file: File, fields: Record<string, str
     };
     xhr.open("POST", `/api/v1${path}`);
     xhr.withCredentials = true;
-    xhr.timeout = 30 * 60 * 1000;
+    xhr.timeout = contract.kind === "directorVoice" ? 120_000 : 30 * 60 * 1000;
     xhr.setRequestHeader("X-CSRF-Token", csrf);
     xhr.setRequestHeader("Accept", "application/json");
     xhr.upload.onprogress = (event) => { if (event.lengthComputable && !finished) onProgress?.(event.loaded, event.total); };
@@ -183,17 +202,17 @@ function uploadMultipart<T>(path: string, file: File, fields: Record<string, str
       let data: unknown;
       try { data = JSON.parse(xhr.responseText); } catch {
         reject(xhr.status >= 400 ? businessError(undefined, xhr.status, requestEpoch, role)
-          : new AppError("INVALID_RESPONSE", "上传响应无法读取，请先刷新素材列表核对。", xhr.status, true)); return;
+          : new AppError("INVALID_RESPONSE", `上传响应无法读取，请先核对${receipt}。`, xhr.status, true)); return;
       }
       if (xhr.status < 200 || xhr.status >= 300) { reject(businessError(data, xhr.status, requestEpoch, role)); return; }
       try { resolve(checkedResult<T>(contract.kind, data, true, role)); } catch (error) { reject(error); }
     });
-    xhr.onerror = () => finish(() => reject(new AppError("NETWORK_ERROR", "上传连接中断，结果未知。请先刷新素材列表再决定是否重传。", 0, true)));
-    xhr.ontimeout = () => finish(() => reject(new AppError("UPLOAD_TIMEOUT", "等待上传结果超时。请先检查素材列表；不会自动重传。", 0, true)));
+    xhr.onerror = () => finish(() => reject(new AppError("NETWORK_ERROR", `上传连接中断，结果未知。请先核对${receipt}再决定是否重传。`, 0, true)));
+    xhr.ontimeout = () => finish(() => reject(new AppError("UPLOAD_TIMEOUT", `等待上传结果超时。请先检查${receipt}；不会自动重传。`, 0, true)));
     xhr.onabort = () => finish(() => reject(abortError(true)));
     signal?.addEventListener("abort", abort, { once: true });
     const form = new FormData(); form.append("file", file);
     for (const [name, value] of Object.entries(fields)) form.append(name, value);
-    try { xhr.send(form); } catch { finish(() => reject(new AppError("NETWORK_ERROR", "上传未能完成，请先检查素材列表。", 0, true))); }
+    try { xhr.send(form); } catch { finish(() => reject(new AppError("NETWORK_ERROR", `上传未能完成，请先检查${receipt}。`, 0, true))); }
   });
 }

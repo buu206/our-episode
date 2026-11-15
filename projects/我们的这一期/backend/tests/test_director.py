@@ -24,7 +24,9 @@ CONFIG = {
 def payload():
     return {
         "directions": [{"id": "direction_1", "title": "举杯的一刻", "summary": "以已核对的举杯片段组织短片。",
-                        "evidence": [dict(EVIDENCE[0])]}],
+                        "evidence": [dict(EVIDENCE[0])], "edit_plan": {
+                            "segments": [{"asset_id": "asset_a", "start": 2.0, "end": 8.0,
+                                          "caption": "举杯的一刻"}], "narration_text": "一位参与者举杯。"}}],
         "uncertainties": ["人物身份尚未确认。"],
     }
 
@@ -159,6 +161,8 @@ def test_success_only_sends_text_evidence_and_has_actual_usage():
         body = json.loads(request.content)
         assert body["max_tokens"] == 4096
         assert "没有读取原视频" in body["messages"][0]["content"]
+        assert "用户可能只确认了素材概览，未逐条回看" in body["messages"][0]["content"]
+        assert "确认不证明每条描述或转写正确" in body["messages"][0]["content"]
         user = json.loads(body["messages"][1]["content"])
         assert user["verified_evidence"] == EVIDENCE
         assert "assets" not in user

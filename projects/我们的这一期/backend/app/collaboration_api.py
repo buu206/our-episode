@@ -126,6 +126,8 @@ def register_collaboration(app, owner_session, repository, settings, cookie_name
             invitation = db.get(Invitation, person.invite_id) if person else None
             if not row or row.expires_at <= time.time() or not person or not invitation:
                 raise DomainError("PARTICIPANT_AUTH_REQUIRED", "请使用本次邀请登录。", 401)
+            from .services.retention import require_available
+            require_available(db, invitation.episode_id)
             if request.method not in ("GET", "HEAD") and not hmac.compare_digest(
                     row.csrf, request.headers.get("x-csrf-token", "")):
                 raise DomainError("CSRF_FAILED", "参与会话校验失败，请刷新后重试。", 403)
@@ -210,6 +212,8 @@ def register_collaboration(app, owner_session, repository, settings, cookie_name
             invitation = db.scalars(select(Invitation).where(Invitation.code_hash == service.digest(body.invite_code))).first()
             if not invitation:
                 raise DomainError("INVALID_INVITATION", "邀请无效。", 401)
+            from .services.retention import require_available
+            require_available(db, invitation.episode_id)
             person = db.scalars(select(Participant).where(Participant.invite_id == invitation.id)).first()
             if person is None:
                 service.require_new(invitation)

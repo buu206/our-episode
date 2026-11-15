@@ -8,7 +8,8 @@ import time
 from sqlalchemy import select
 from ..models import Asset, Budget, Episode, Job, ModelCall, Version, uid
 from ..repository import DomainError
-from .director import CloudDirector, DirectorError, parse_result
+from .director import CloudDirector, DirectorError, check_grounding, parse_result
+from . import director_guidance
 
 
 def active_assets(db, episode):
@@ -51,7 +52,23 @@ def build_edit_plan(direction, assets, packaging='standard'):
     Sparse visual evidence is not interpolated into invented continuous events.
     The complete proposal stays in storage, including evidence not used by this cut.
     """
-    narration = direction['title'] if packaging == 'standard' else ''
+    if direction.get('edit_plan') is not None:
+        try:
+            parsed = parse_result(json.dumps({'directions': [direction], 'uncertainties': []}),
+                                  {key: asset.duration for key, asset in assets.items()},
+                                  require_edit_plan=True)
+        except (DirectorError, TypeError, ValueError):
+            raise DomainError('INVALID_PLAN', '剪辑方案的结构、来源或时长无效，请重新生成。', 409) from None
+        plan = parsed.directions[0].edit_plan
+        segments = [segment.model_dump(exclude_defaults=True) for segment in plan.segments]
+        if any(s.get('editorial') for s in segments) and packaging != 'variety_v2':
+            raise DomainError('EDITORIAL_PACKAGING_REQUIRED', '这一方案包含编导版式，请选择综艺节奏包装。', 422)
+        if packaging not in ('standard', 'variety', 'variety_v2'):
+            for segment in segments:
+                segment['caption'] = ''
+        return segments, plan.narration_text.strip() if packaging in ('standard', 'variety', 'variety_v2') else ''
+    # Compatibility path for proposals stored before explicit edit plans existed.
+    narration = direction['title'] if packaging in ('standard', 'variety', 'variety_v2') else ''
     limit = 59.9 if narration else 90  # 30 s voice plus AAC/frame boundary margin
     segments, remaining = [], float(limit)
     for span in direction['evidence']:
@@ -62,7 +79,7 @@ def build_edit_plan(direction, assets, packaging='standard'):
         if length < .1 or len(segments) >= 30:
             break
         # Captions are scene descriptions, never presented as verbatim dialogue.
-        note = span['note'] if packaging == 'standard' else ''
+        note = span['note'] if packaging in ('standard', 'variety', 'variety_v2') else ''
         caption = note if len(note) <= 100 else note[:99] + '…'
         segments.append({'asset_id': asset.id, 'start': span['start'],
                          'end': span['start'] + length, 'caption': caption})
@@ -79,25 +96,41 @@ class ModelServices:
     def __init__(self, config):
         self.config = config
 
+    def _adapter(self, kind, permit=None):
+        from .provider_config import adapter
+        return adapter(self.config, kind, budget_check=permit)
+
+    def profile(self):
+        from .provider_config import STRINGS
+        return {key: self.config.get(key, default) for key, default in STRINGS.items()
+                if not key.endswith('_API_KEY')
+                and (not key.startswith('MINIMAX_')
+                     or key.startswith('MINIMAX_TTS_') and self.config.get('TTS_PROVIDER') == 'minimax'
+                     or key.startswith('MINIMAX_ASR_') and self.config.get('ASR_PROVIDER') == 'minimax')}
+
     def ready(self):
-        # All contracts are checked before offering the paid workflow.
-        from .vision import CloudVision
-        from .speech import CloudSpeech
-        if self.config.get('CLOUD_RETENTION_VERIFIED') is not True:
-            return False, '真实 AI 接入按你的安排延至上线前；当前不发送素材。先核实供应商留存/删除期限与境内处理，再配置服务。'
-        for service in (CloudDirector(self.config), CloudVision(self.config), CloudSpeech(self.config)):
-            ready, reason = service.ready()
-            if not ready:
-                return False, reason
-        return True, '已配置云端准入；分析仍需人工核对，所有费用受本期与累计预算限制。'
+        try:
+            for kind in ('director', 'vision', 'asr', 'tts'):
+                ready, reason = self._adapter(kind).ready()
+                if not ready:
+                    return False, reason
+        except DirectorError as exc:
+            return False, exc.message
+        return True, '所选模型已配置准入；费用受本期与累计预算限制，结果仍需人工核对。'
+
+    def director_estimate(self):
+        return self._adapter('director').required_reservation_yuan
+
+    def vision_estimate(self, prepared):
+        service = self._adapter('vision')
+        return service.estimate(prepared) if hasattr(service, 'estimate') else prepared.required_reservation_yuan
 
     def prepare_vision(self, assets, media_root):
         from .vision import prepare_video
         return prepare_video(assets, media_root=media_root)
 
     async def vision(self, prepared, reservation, permit):
-        from .vision import CloudVision
-        return await CloudVision(self.config, budget_check=permit).analyze(prepared, reservation=reservation)
+        return await self._adapter('vision', permit).analyze(prepared, reservation=reservation)
 
     def prepare_audio(self, asset, path, directory):
         from .speech import extract_audio_chunks
@@ -105,58 +138,146 @@ class ModelServices:
 
     def asr_estimate(self, chunks):
         from .speech import asr_reservation_yuan
+        if self.config.get('ASR_PROVIDER') == 'volc':
+            from .volc_speech import asr_estimate
+            return asr_estimate(chunks)
+        if self.config.get('ASR_PROVIDER') == 'minimax':
+            from .minimax_asr import asr_estimate
+            return asr_estimate(chunks)
         return asr_reservation_yuan(chunks)
 
     async def asr(self, chunks, reservation, permit):
-        from .speech import CloudSpeech
-        return await CloudSpeech(self.config, budget_check=permit).transcribe(chunks, reservation=reservation)
+        return await self._adapter('asr', permit).transcribe(chunks, reservation=reservation)
 
     async def directions(self, evidence, assets, background, reservation, permit):
-        return await CloudDirector(self.config, budget_check=permit).propose(evidence, assets, background, reservation=reservation)
+        return await self._adapter('director', permit).propose(evidence, assets, background, reservation=reservation)
+
+    def _chat_adapter(self, context=None, permit=None):
+        from .director_chat_access import chat_adapter
+        return chat_adapter(self.config, repo=getattr(self, 'repo', None), context=context, permit=permit)
+
+    def chat_ready(self, context=None):
+        try:
+            return self._chat_adapter(context).ready()
+        except DirectorError as exc:
+            return False, exc.message
+
+    def chat_estimate(self, context=None):
+        return self._chat_adapter(context).required_reservation_yuan
+
+    async def director_chat(self, context, reservation, permit):
+        return await self._chat_adapter(context, permit).chat(context, reservation=reservation)
+
+    def voice_ready(self):
+        from .director_voice import provider_guard
+        from .speech import SpeechError
+        try:
+            provider_guard(self.config)
+            return True, '每次录音提交前确认发送到MiniMax；具体留存期限仍未核实。'
+        except SpeechError as exc:
+            return False, exc.message
+
+    async def director_voice(self, chunks, reservation, permit, context):
+        from .director_voice import ConsentedMiniMaxASR
+        return await ConsentedMiniMaxASR(self.config, self.repo, context['job_id'], permit).transcribe(
+            chunks, reservation=reservation)
+
+    def _scoped_direction_adapter(self, context=None, permit=None):
+        from .director_chat_access import directions_adapter
+        return directions_adapter(self.config, repo=getattr(self, 'repo', None), context=context, permit=permit)
+
+    def directions_ready(self, context=None):
+        try:
+            return self._scoped_direction_adapter(context).ready()
+        except DirectorError as exc:
+            return False, exc.message
+
+    def scoped_director_estimate(self, context=None):
+        return self._scoped_direction_adapter(context).required_reservation_yuan
+
+    async def scoped_directions(self, evidence, assets, background, reservation, permit, context):
+        return await self._scoped_direction_adapter(context, permit).propose(
+            evidence, assets, background, reservation=reservation)
 
     def tts_estimate(self, text):
         from .speech import tts_reservation_yuan
+        if self.config.get('TTS_PROVIDER') == 'minimax':
+            from .minimax_speech import tts_estimate
+            return tts_estimate(text)
+        if self.config.get('TTS_PROVIDER') == 'volc':
+            from .volc_speech import tts_estimate
+            return tts_estimate(text)
         return tts_reservation_yuan(text)
 
     async def tts(self, text, output, reservation, permit):
-        from .speech import CloudSpeech
-        return await CloudSpeech(self.config, budget_check=permit).synthesize(text, output, reservation=reservation)
+        return await self._adapter('tts', permit).synthesize(text, output, reservation=reservation)
 
 
 class Pipeline:
     def __init__(self, repo, services):
         self.repo, self.services = repo, services
 
-    def require_ready(self):
-        ready, reason = self.services.ready()
+    def require_ready(self, kind=None, context=None):
+        if kind == 'director_voice':
+            from .director_voice import require_ready
+            require_ready(self.services)
+            return
+        if kind == 'director_chat':
+            from .director_chat import require_ready
+            require_ready(self.services, context)
+            return
+        ready, reason = (self.services.directions_ready(context=context)
+            if kind == 'directions' and context is not None else self.services.ready())
         if not ready:
             raise DomainError('CLOUD_DISABLED', reason, 409)
 
     def _validate_job(self, db, job):
+        if job.kind == 'visual_review':
+            from .visual_review import validate_job
+            return validate_job(self.repo, db, job)
+        if job.kind == 'director_voice':
+            from .director_voice import validate_job
+            return validate_job(self.repo, db, job)
+        if job.kind == 'director_chat':
+            from .director_chat import validate_job
+            return validate_job(self.repo, db, job)
         episode = self.repo.owned(db, Episode, job.episode_id, job.owner_id)
         assets = assert_sources(db, episode, job.payload['asset_ids'])
         if job.payload['revision'] != episode.evidence_revision:
             raise DomainError('EVIDENCE_CHANGED', '证据已更新，此任务不能继续。', 409)
+        if job.kind == 'directions':
+            director_guidance.assert_revision(db, episode, job.payload.get('brief_revision', 0))
+            if job.payload.get('chat_proposal_id'):
+                from .director_chat import scoped_direction_context
+                scoped_direction_context(self.repo, db, job)
         if job.version_id:
             version = self.repo.owned(db, Version, job.version_id, job.owner_id)
             if version.state == 'restricted':
                 raise DomainError('SOURCE_REMOVED', '版本已受限，任务不能继续。', 409)
         return episode, assets
 
-    def invoke(self, job_id, kind, amount, operation, request_digest=None, checkpoint_key=None):
+    def _check_pending_costs(self, db, job):
+        held = db.scalars(select(Budget).where(Budget.episode_id == job.episode_id,
+            Budget.owner_id == job.owner_id,
+            (Budget.state.in_(('unknown', 'reserved'))) | ((Budget.state == 'settled') & Budget.cost.is_(None)))).first()
+        if held:
+            raise DomainError('COST_UNKNOWN', '本期上一步费用尚未核实，已暂停后续模型调用。', 409)
+
+    def invoke(self, job_id, kind, amount, operation, request_digest=None, checkpoint_key=None, readiness_context=None):
         """Reserve before network I/O; persist unknown costs even on crashes."""
         checkpoint_key = checkpoint_key or kind + ':' + (request_digest or 'default')
-        self.require_ready()
+        self.require_ready(kind, readiness_context)
         with self.repo.transaction() as db:
             job = db.get(Job, job_id)
             self._validate_job(db, job)
+            profile = self.services.profile() if hasattr(self.services, 'profile') else {}
+            previous_profile = job.payload.get('model_profile')
+            if previous_profile is not None and previous_profile != profile:
+                raise DomainError('MODEL_CONFIG_CHANGED', '任务的模型配置已改变；请恢复原配置或新建任务，未重复调用。', 409)
+            job.payload = {**job.payload, 'model_profile': profile}
             if checkpoint_key and checkpoint_key in job.payload.get('steps', {}):
                 return job.payload['steps'][checkpoint_key]
-            held = db.scalars(select(Budget).where(Budget.episode_id == job.episode_id,
-                Budget.owner_id == job.owner_id,
-                (Budget.state.in_(('unknown', 'reserved'))) | ((Budget.state == 'settled') & Budget.cost.is_(None)))).first()
-            if held:
-                raise DomainError('COST_UNKNOWN', '本期上一步费用尚未核实，已暂停后续模型调用。', 409)
+            self._check_pending_costs(db, job)
             reservation = self.repo.reserve(db, job.owner_id, job.episode_id, amount)
             call = ModelCall(owner_id=job.owner_id, episode_id=job.episode_id,
                              job_id=job.id, reservation_id=reservation, kind=kind,
@@ -169,7 +290,7 @@ class Pipeline:
         def permit(candidate, required=None, digest=None):
             if candidate != reservation:
                 return False
-            self.require_ready()
+            self.require_ready(kind, readiness_context)
             with self.repo.transaction() as db:
                 row, ledger, current = db.get(ModelCall, call_id), db.get(Budget, reservation), db.get(Job, job_id)
                 self._validate_job(db, current)
@@ -240,7 +361,7 @@ class Pipeline:
         if 'vision' not in steps:
             self.stage(job_id, '正在抽帧并分析可见画面')
             prepared = self.services.prepare_vision([{'asset_id': a.id, 'path': self.repo.path(a.path)} for a in assets], self.repo.data_dir / 'assets')
-            result = self.invoke(job_id, 'vision', prepared.required_reservation_yuan,
+            result = self.invoke(job_id, 'vision', self.services.vision_estimate(prepared),
                 lambda reservation, permit: self.services.vision(prepared, reservation, permit), prepared.request_digest, checkpoint_key='vision')
             steps['vision'] = result.model_dump() if hasattr(result, 'model_dump') else result
             self.checkpoint(job_id, 'vision', steps['vision'])
@@ -269,7 +390,8 @@ class Pipeline:
         for asset in assets:
             for row in steps['asr:' + asset.id]:
                 evidence.append({'id': uid(), 'asset_id': row['asset_id'], 'start': row['start'],
-                                 'end': row['end'], 'note': row['text'], 'kind': 'speech'})
+                                 'end': row['end'], 'note': row['text'], 'kind': 'speech',
+                                 '_speaker': (row.get('speaker_scope'), row.get('speaker'))})
         notes = list(steps['vision'].get('uncertainties', []))
         # ASR emits word timings. Merge adjacent words from the same source
         # into reviewable utterances; retain every word and its outer time range.
@@ -277,19 +399,27 @@ class Pipeline:
         speech = []
         for row in (item for item in evidence if item['kind'] == 'speech'):
             if (speech and speech[-1]['asset_id'] == row['asset_id']
+                    and speech[-1].get('_speaker') == row.get('_speaker')
                     and row['start'] - speech[-1]['end'] <= 2
                     and row['end'] - speech[-1]['start'] <= 12
                     and len(speech[-1]['note']) + len(row['note']) < 500):
                 speech[-1]['note'] += ' ' + row['note']
-                speech[-1]['end'] = row['end']
+                speech[-1]['end'] = max(speech[-1]['end'], row['end'])
             else:
                 speech.append(dict(row))
+        for row in speech:
+            row.pop('_speaker', None)  # Chunk-local labels are not person identities.
         evidence = visual + speech
         if len(evidence) > 100:
             raise DomainError('EVIDENCE_TOO_LARGE', '可核对证据超过100条；已保留分析检查点，请缩小素材范围再核对，未截断内容。', 409)
         with self.repo.transaction() as db:
             job = db.get(Job, job_id)
             episode, _ = self._validate_job(db, job)
+            if job.payload.get('validation_only') is True:
+                self.finish(db, job, {'validation_only': True, 'evidence_count': len(evidence),
+                    'evidence': evidence, 'notes': notes, 'coverage': steps['vision'].get('coverage', [])},
+                    '画面与原声补验完成，已确认内容保持')
+                return
             invalidate_analysis(self.repo, db, episode)
             episode.evidence, episode.analysis_state = evidence, 'review'
             episode.analysis_asset_ids = job.payload['asset_ids']
@@ -303,19 +433,47 @@ class Pipeline:
             episode, assets = self._validate_job(db, job)
             if episode.evidence_confirmed_revision != episode.evidence_revision:
                 raise DomainError('REVIEW_REQUIRED', '请先核对并确认证据。', 409)
-            evidence = [{key: row[key] for key in ('asset_id', 'start', 'end', 'note')} for row in episode.evidence]
-            background = episode.background
-        self.stage(job_id, '正在根据已核对证据提出节目方向')
-        result = self.invoke(job_id, 'directions', CloudDirector.required_reservation_yuan,
-            lambda reservation, permit: self.services.directions(evidence, {a.id: a.duration for a in assets}, background, reservation, permit), checkpoint_key='directions')
+            evidence = [{key: row[key] for key in ('id', 'kind', 'asset_id', 'start', 'end', 'note')
+                         if key in row} for row in episode.evidence]
+            background = director_guidance.compiled_background(db, episode)
+            context = None
+            if job.payload.get('chat_proposal_id'):
+                from .director_chat import scoped_direction_context
+                context = scoped_direction_context(self.repo, db, job)
+        self.stage(job_id, '正在根据已确认的素材内容提出节目方向')
+        asset_lengths = {a.id: a.duration for a in assets}
+        if context is not None:
+            amount = self.services.scoped_director_estimate(context)
+            operation = lambda reservation, permit: self.services.scoped_directions(
+                evidence, asset_lengths, background, reservation, permit, context)
+        else:
+            amount = self.services.director_estimate()
+            operation = lambda reservation, permit: self.services.directions(
+                evidence, asset_lengths, background, reservation, permit)
+        result = self.invoke(job_id, 'directions', amount, operation,
+            checkpoint_key='directions', readiness_context=context)
         data = result.model_dump() if hasattr(result, 'model_dump') else result
         # Recheck trusted interface at the application boundary as well.
-        valid = parse_result(json.dumps(data, ensure_ascii=False), {a.id: a.duration for a in assets})
+        try:
+            valid = parse_result(json.dumps(data, ensure_ascii=False), {a.id: a.duration for a in assets},
+                                 require_edit_plan=self.services.is_real)
+            check_grounding(valid, evidence)
+        except DirectorError as exc:
+            raise DomainError(exc.code, exc.message, 409) from None
         with self.repo.transaction() as db:
             job = db.get(Job, job_id)
             episode, _ = self._validate_job(db, job)
-            episode.directions = [d.model_dump() for d in valid.directions]
+            if job.payload.get('validation_only') is True:
+                # Operator-created verification jobs use the same production
+                # adapters, budget and schema checks without replacing a user's
+                # chosen story or invalidating their existing edit.
+                self.finish(db, job, {'direction_count': len(valid.directions),
+                    'validation_only': True, 'directions': valid.model_dump()},
+                    '编导真实补验完成，当前方案保持')
+                return
+            episode.directions = [d.model_dump(exclude_defaults=True) for d in valid.directions]
             episode.directions_revision = episode.evidence_revision
+            director_guidance.published(db, episode, job.payload.get('brief_revision', 0))
             episode.analysis_notes = list(episode.analysis_notes) + valid.uncertainties
             self.finish(db, job, {'direction_count': len(valid.directions)}, '请选择有来源依据的节目方向')
 
@@ -345,6 +503,10 @@ class Pipeline:
                 job = db.get(Job, job_id)
                 self._validate_job(db, job)
                 version = db.get(Version, job.version_id)
+                if job.payload.get('validation_only') is True:
+                    self.finish(db, job, {'validation_only': True, 'narration_ready': True,
+                        'audio_path': relative}, '原已确认文案试听补验完成，成片保持')
+                    return
                 version.narration_path, version.state, version.error = relative, 'draft', None
                 release_artifact(db, job, relative)
                 self.finish(db, job, {'narration_ready': True}, '旁白已生成，可以渲染预览')
@@ -362,4 +524,23 @@ class Pipeline:
         self.repo.audit(db, job.owner_id, job.kind + '_succeeded', job.id)
 
     def run(self, job_id, kind):
+        if kind == 'visual_review':
+            from .visual_review import run
+            return run(self, job_id)
+        with self.repo.factory() as db:
+            job = db.get(Job, job_id)
+            marker = job.payload.get('workflow_grant')
+            if marker:
+                from .workflow_access import resolve
+                service, _ = resolve(self.services, self.repo, job.episode_id, job.owner_id,
+                    kind, job.version_id, bound=marker)
+                scoped = Pipeline(self.repo, service)
+                return {'analysis': scoped.analyze, 'directions': scoped.directions,
+                        'narration': scoped.narrate}[kind](job_id)
+        if kind == 'director_voice':
+            from .director_voice import run
+            return run(self, job_id)
+        if kind == 'director_chat':
+            from .director_chat import run
+            return run(self, job_id)
         {'analysis': self.analyze, 'directions': self.directions, 'narration': self.narrate}[kind](job_id)

@@ -10,6 +10,7 @@ from pathlib import Path
 import shutil
 import signal
 import socket
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -39,6 +40,11 @@ if (not CHECK_DIR.is_dir() or CHECK_DIR == Path("/")
 STATE = CHECK_DIR / "restart-instance.json"
 COLLABORATION = CHECK_DIR / "restart-collaboration.json"
 SHARING = CHECK_DIR / "restart-sharing.json"
+EDIT_DRAFT = CHECK_DIR / "restart-edit-draft.json"
+EDITORIAL_DRAFT = CHECK_DIR / "restart-editorial-draft.json"
+SUBTITLE_DRAFT = CHECK_DIR / "restart-subtitle-draft.json"
+RETENTION = CHECK_DIR / "restart-retention.json"
+DIRECTOR = CHECK_DIR / "restart-director.json"
 
 
 def read_state():
@@ -199,7 +205,7 @@ def confirmed_test_version(owner, episode_id):
     result = subprocess.run(
         [binary, "-nostdin", "-v", "error", "-n", "-threads", "2",
          "-filter_threads", "1", "-f", "lavfi", "-i",
-         "color=c=blue:size=160x90:rate=10", "-t", "0.8", "-an",
+         "color=c=blue:size=160x90:rate=10", "-t", "3", "-an",
          "-c:v", "libx264", "-threads", "2", "-pix_fmt", "yuv420p",
          "-movflags", "+faststart", str(source)],
         check=False, capture_output=True, timeout=20, shell=False,
@@ -213,6 +219,62 @@ def confirmed_test_version(owner, episode_id):
     if response.status_code not in (200, 201):
         fail("分享重启检查上传测试视频失败。")
     asset_id = response.json()["id"]
+    # Persist the same fields compiled from a model edit plan, through the normal
+    # API, without enabling cloud processing or manufacturing a model response.
+    draft = {"title": "重启检查编导草案", "packaging": "variety_v2",
+             "narration_text": "待人工确认的测试片头。", "segments": [
+                 {"asset_id": asset_id, "start": .4, "end": .8, "caption": "后半段",
+                  "visual_beats": [{"kind": "cutout", "source_time": .4, "duration": .4,
+                                    "target": {"x": .2, "y": .2, "width": .4, "height": .4},
+                                    "contour": [{"x": .3, "y": .2}, {"x": .5, "y": .4}, {"x": .3, "y": .6}],
+                                    "text": "细节", "position": "bottom_right"}]},
+                 {"asset_id": asset_id, "start": 0, "end": .3, "caption": "前半段"}]}
+    response = owner.post(f"/api/v1/episodes/{episode_id}/versions", json=draft)
+    if response.status_code != 201:
+        fail("重启检查创建编导草案失败。")
+    # Compare the complete API contract before and after restart. Old manual
+    # requests omit optional director metadata; the response returns defaults.
+    expected_segments = [{"purpose": "", "evidence_ids": [], "transition": "cut",
+                          "transition_duration": 0, "visual_beats": [], **item} for item in draft["segments"]]
+    saved = response.json()
+    if saved.get("segments") != expected_segments:
+        fail("保存草案时片段内容或默认剪辑参数变化。")
+    save_private_record(EDIT_DRAFT, {**draft, "segments": expected_segments, "id": saved["id"]})
+    evidence_id = 'restart-editorial-evidence'
+    # A labelled synthetic fixture in verify's isolated database, never a model
+    # result or real user evidence. The public API cannot invent analysis IDs.
+    # The version itself is created/read through HTTP, then survives real restart.
+    fixture = [{'id': evidence_id, 'kind': 'visual', 'asset_id': asset_id,
+                'start': 0., 'end': 3., 'note': '重启检查蓝色合成图形，非真实模型。'},
+               {'id':'restart-synthetic-speech','kind':'speech','asset_id':asset_id,'start':.1,'end':.5,'note':'合成字幕夹具'}]
+    with sqlite3.connect(CHECK_DIR / 'data' / 'app.sqlite3') as db:
+        changed = db.execute(
+            'update episodes set evidence=?, evidence_confirmed_revision=evidence_revision, '
+            'analysis_state=?, analysis_asset_ids=? where id=?',
+            (json.dumps(fixture, ensure_ascii=False), 'confirmed', json.dumps([asset_id]), episode_id))
+        if changed.rowcount != 1:
+            fail('隔离合成来源夹具未保存。')
+    editorial = owner.post(f'/api/v1/episodes/{episode_id}/versions', json={
+        'title': '重启检查后期编导安排', 'packaging': 'variety_v2', 'segments': [
+            {'asset_id': asset_id, 'start': 0., 'end': 3., 'caption': '',
+             'purpose': '合成素材版式测试', 'evidence_ids': [evidence_id],
+             'editorial': {'role': 'setup', 'treatment': 'chapter', 'reason': '验证版式参数恢复',
+                           'evidence_ids': [evidence_id], 'source_time': .2, 'duration': 2.,
+                           'text': '合成测试', 'detail': '这是一块蓝色画面'}}]})
+    if editorial.status_code != 201:
+        fail('重启检查的后期编导安排保存失败。')
+    saved_editorial = editorial.json()
+    save_private_record(EDITORIAL_DRAFT, {'id': saved_editorial['id'], 'segments': saved_editorial['segments']})
+    track = owner.get(f"/api/v1/versions/{saved_editorial['id']}/subtitles")
+    if track.status_code != 200 or not track.json()['rows']:
+        fail('隔离字幕轨道读取失败。')
+    segments = saved_editorial['segments']
+    segments[0]['subtitle_edits'] = [{'cue_id':track.json()['rows'][0]['cue_id'], 'text':'校对后的合成字幕', 'hidden':True, 'reviewed':True}]
+    corrected = owner.post(f'/api/v1/episodes/{episode_id}/versions', json={
+        'title':'重启字幕校对夹具', 'base_version_id':saved_editorial['id'], 'packaging':'variety_v2', 'segments':segments})
+    if corrected.status_code != 201:
+        fail('隔离字幕校对保存失败。')
+    save_private_record(SUBTITLE_DRAFT, {'id':corrected.json()['id']})
     response = owner.post(f"/api/v1/episodes/{episode_id}/versions", json={
         "title": "重启验收固定版本", "packaging": "original", "narration_text": "",
         "segments": [{"asset_id": asset_id, "start": 0, "end": 0.6, "caption": ""}],
@@ -340,6 +402,26 @@ def write_sharing(owner, state, episode_id):
 
 
 def read_sharing(owner, state, episode_id):
+    subtitles = json.loads(SUBTITLE_DRAFT.read_text(encoding='utf-8'))
+    checked = owner.get(f"/api/v1/versions/{subtitles['id']}/subtitles")
+    if checked.status_code != 200 or not checked.json()['rows']:
+        fail('重启后校对字幕无法读取。')
+    row = checked.json()['rows'][0]
+    if row['text'] != '校对后的合成字幕' or not row['hidden'] or not row['reviewed']:
+        fail('重启后字幕正文、隐藏或校对状态变化。')
+    draft = json.loads(EDIT_DRAFT.read_text(encoding="utf-8"))
+    response = owner.get(f"/api/v1/episodes/{episode_id}")
+    if response.status_code != 200:
+        fail("重启后无法读取编导草案。")
+    editorial = json.loads(EDITORIAL_DRAFT.read_text(encoding='utf-8'))
+    items = [v for v in response.json()['versions'] if v['id'] == editorial['id']]
+    if len(items) != 1 or items[0]['segments'] != editorial['segments'] or items[0]['state'] != 'draft':
+        fail('重启后后期编导节点、版式或待确认状态变化。')
+    versions = [item for item in response.json()["versions"] if item["id"] == draft["id"]]
+    if (len(versions) != 1 or any(versions[0].get(key) != value for key, value in draft.items())
+            or versions[0].get("narration_approved") is not False
+            or versions[0].get("narration_ready") is not False):
+        fail("重启后片段顺序、花字、旁白草案或人工确认状态变化。")
     record = json.loads(SHARING.read_text(encoding="utf-8"))
     if (not isinstance(record, dict) or record.get("episode_id") != episode_id
             or not isinstance(record.get("version_id"), str)
@@ -386,6 +468,62 @@ def read_sharing(owner, state, episode_id):
                 fail("重启后已关闭分享重新允许观看。")
             check_share_media(viewer, expected["media_url"], allowed=allowed)
             check_viewer_scope(viewer, record["version_id"])
+
+
+def write_retention(client, episode_id):
+    response = client.get(f'/api/v1/episodes/{episode_id}/retention')
+    if response.status_code != 200 or not response.json()['expires_at']:
+        fail('留存重启检查缺少保存期限。')
+    deadline = response.json()['expires_at']
+    response = client.post('/api/v1/episodes', json={'title': '待删除的重启测试空节目'})
+    if response.status_code != 201:
+        fail('留存重启检查无法创建测试记录。')
+    deleted_id = response.json()['id']
+    if client.delete(f'/api/v1/episodes/{deleted_id}?confirm=true').status_code != 200:
+        fail('留存重启检查无法删除测试记录。')
+    save_private_record(RETENTION, {'episode_id': episode_id, 'expires_at': deadline, 'deleted_id': deleted_id})
+
+
+def read_retention(client, episode_id):
+    expected = json.loads(RETENTION.read_text(encoding='utf-8'))
+    response = client.get(f'/api/v1/episodes/{episode_id}/retention')
+    if (expected['episode_id'] != episode_id or response.status_code != 200
+            or response.json()['expires_at'] != expected['expires_at']):
+        fail('重启改变了节目保存期限。')
+    if client.get(f'/api/v1/episodes/{expected["deleted_id"]}').status_code != 410:
+        fail('重启后已删除节目重新可见。')
+    response = client.get(f'/api/v1/episodes/{expected["deleted_id"]}/retention')
+    if response.status_code != 200 or response.json()['cleanup_pending'] or not response.json()['deletion_requested']:
+        fail('重启后删除完成状态丢失。')
+
+
+def write_director(client, episode_id):
+    response = client.post(f'/api/v1/episodes/{episode_id}/director/messages', json={
+        'revision': 0, 'client_id': 'restart-director-focus', 'choice': 'conversation'})
+    if response.status_code != 200:
+        fail('导演需求重启检查无法保存选择。')
+    first = response.json()
+    if first.get('revision') != 1 or first.get('focus') != 'conversation':
+        fail('导演需求保存结果与选择不一致。')
+    response = client.post(f'/api/v1/episodes/{episode_id}/director/messages', json={
+        'revision': 1, 'client_id': 'restart-director-note', 'text': '保留完整原声，花字少一点。'})
+    if response.status_code != 200:
+        fail('导演需求重启检查无法保存补充。')
+    state = response.json()
+    if state.get('revision') != 2 or state.get('notes') != '保留完整原声，花字少一点。':
+        fail('导演补充需求保存不一致。')
+    save_private_record(DIRECTOR, state)
+
+
+def read_director(client, episode_id):
+    expected = json.loads(DIRECTOR.read_text(encoding='utf-8'))
+    response = client.get(f'/api/v1/episodes/{episode_id}')
+    if response.status_code != 200 or response.json().get('director') != expected:
+        fail('重启后导演需求、对话记录或修订状态变化。')
+    retry = client.post(f'/api/v1/episodes/{episode_id}/director/messages', json={
+        'revision': 1, 'client_id': 'restart-director-note', 'text': '保留完整原声，花字少一点。'})
+    if retry.status_code != 200 or retry.json() != expected:
+        fail('重启后重复发送同一条导演需求没有保持幂等。')
 
 
 def start():
@@ -450,6 +588,8 @@ try:
                     fail("写入接口未返回记录 ID。")
                 write_collaboration(client, state, record_id)
                 write_sharing(client, state, record_id)
+                write_retention(client, record_id)
+                write_director(client, record_id)
                 print(record_id)
             else:
                 response = client.get("/api/v1/episodes")
@@ -461,6 +601,8 @@ try:
                     fail("重启后未找到唯一的持久记录。")
                 read_collaboration(client, state, sys.argv[2])
                 read_sharing(client, state, sys.argv[2])
+                read_retention(client, sys.argv[2])
+                read_director(client, sys.argv[2])
                 print(matches[0]["title"])
     elif action == "stop":
         if STATE.exists():

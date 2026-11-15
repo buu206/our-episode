@@ -93,7 +93,7 @@ it('closes the home modal during permission revalidation and keeps it closed aft
 });
 
 it.each([
-  [{ ...status, model_mode: 'cloud', workflow_enabled: false }, '本机制作 · AI 暂未接入'],
+  [{ ...status, model_mode: 'cloud', workflow_enabled: false }, '本机制作 · AI 按本期授权启用'],
   [{ ...status, model_mode: 'cloud', cloud_enabled: true, workflow_enabled: true }, '真实 AI 已启用'],
 ])('shows the server capability state for a non-demo home session', async (mode, label) => {
   vi.mocked(api).mockImplementation(async path => path === '/status' ? mode : { user_id: 'alice', csrf_token: 'fixture' });

@@ -85,7 +85,7 @@ export function ShareManager({ episodeId }: { episodeId: string }) {
     } catch (cause) {
       if (!mounted.current || current !== generation.current || controller.signal.aborted) return;
       setFresh(false); setReadError(message(cause));
-      if (cause instanceof AppError && cause.status === 401) { setEpisode(null); setShares([]); setSecret(null); }
+      if (cause instanceof AppError && (cause.status === 401 || cause.code === 'EPISODE_EXPIRED')) { setEpisode(null); setShares([]); setSecret(null); }
     } finally {
       if (mounted.current && current === generation.current) setRefreshing(false);
     }

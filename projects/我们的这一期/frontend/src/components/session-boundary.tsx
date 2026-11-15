@@ -1,6 +1,9 @@
 'use client';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import Link from 'next/link';
+import { BrandMark } from './brand-mark';
+import { ProductionChrome } from './production-chrome';
+import { FloatingDirector, clearDirectorChatMemory } from './floating-director';
 import { usePathname, useRouter } from 'next/navigation';
 import { LockKeyhole, LogOut, MoreHorizontal } from 'lucide-react';
 import { api, AppError, setCsrf } from '@/lib/api';
@@ -9,14 +12,14 @@ import { Button, Dialog, MediaAccessContext, ModeBanner, Notice } from './ui';
 import { clearWorkspaceDrafts, discardWorkspaceDraft, setDraftOwner } from './studio/draft-cache';
 
 export function Brand() {
-  return <span className="brand"><span className="brand-symbol" aria-hidden="true"><svg viewBox="0 0 40 40" width="32" height="32"><path d="M20 1 25 14 39 10 30 21 39 31 25 28 20 40 15 28 1 31 10 21 1 10 15 14Z" fill="currentColor"/><path d="m17 15 10 6-10 6Z" fill="#d6ff61"/></svg></span><span>我们的这<span className="brand-last">一期</span><small>OUR EPISODE</small></span></span>;
+  return <span className="brand"><BrandMark /><span>在场<small>ZAICHANG</small></span></span>;
 }
 
 function PremiereChrome({ status }: { status: Status | null }) {
   return <div className="premiere-chrome">
     <div className="chrome-dots" aria-hidden="true"><i /><i /><i /></div>
-    <div className="chrome-address" aria-label="装饰浏览器地址栏，非实际访问地址"><LockKeyhole size={12} aria-hidden="true" /><span>wo.our-episode.app / 开场</span></div>
-    <span className="chrome-mode">{!status ? '正在核对运行状态' : status.model_mode === 'demo' ? '本机演示 · 非真实 AI' : status.cloud_enabled && status.workflow_enabled ? '真实 AI 已启用' : '本机制作 · AI 暂未接入'}</span>
+    <div className="chrome-address" aria-label="装饰浏览器地址栏，非实际访问地址"><LockKeyhole size={12} aria-hidden="true" /><span>在场 / 开场</span></div>
+    <span className="chrome-mode">{!status ? '正在核对运行状态' : status.model_mode === 'demo' ? '本机演示 · 非真实 AI' : status.cloud_enabled && status.workflow_enabled ? '真实 AI 已启用' : '本机制作 · AI 按本期授权启用'}</span>
     <MoreHorizontal size={22} className="chrome-more" aria-hidden="true" />
   </div>;
 }
@@ -77,6 +80,7 @@ export function SessionBoundary({ children }: { children: ReactNode }) {
   const authController = useRef<AbortController | null>(null);
   const invalidateAuth = useCallback(() => { authGeneration.current++; authController.current?.abort(); }, []);
   const redirect = useCallback(() => {
+    clearDirectorChatMemory(); window.dispatchEvent(new Event('director:reset'));
     clearWorkspaceDrafts();
     setReady(false); setFrozen(true); setStatus(null);
     setCsrf(null);
@@ -125,17 +129,17 @@ export function SessionBoundary({ children }: { children: ReactNode }) {
   async function logout() {
     if (busy || !allowLeave(false)) return;
     setBusy(true); setError('');
-    try { await api('/auth/logout', { method: 'POST', body: {} }); clearWorkspaceDrafts(); setCsrf(null); router.replace('/login'); }
+    try { await api('/auth/logout', { method: 'POST', body: {} }); clearWorkspaceDrafts(); clearDirectorChatMemory(); window.dispatchEvent(new Event('director:reset')); setCsrf(null); router.replace('/login'); }
     catch (cause) { setError(cause instanceof Error ? cause.message : '退出未完成，请重试。'); }
     finally { setBusy(false); }
   }
-  return <div className={isHome ? 'premiere-shell' : undefined}>
-    {isHome && <PremiereChrome status={status} />}
+  return <div className={isHome ? 'premiere-shell' : 'production-shell'}>
+    {isHome ? <PremiereChrome status={status} /> : <ProductionChrome label={pathname.endsWith("/collaboration") ? "朋友一起" : pathname.endsWith("/sharing") ? "私密放映" : "制作现场"} />}
     {isHome ? <header className="premiere-header">
-      <Link href="/" className="premiere-brand" aria-label="我们的这一期，返回开场"><span aria-hidden="true">期</span>我们的这一期</Link>
+      <Link href="/" className="premiere-brand" aria-label="在场，返回开场"><BrandMark />在场</Link>
       <nav aria-label="主导航"><Link href="/" aria-current="page">开场</Link><a href="#recent">往期</a><a href="#how-it-works">怎么玩</a></nav>
       <Button className="account-button" onClick={() => setAccountOpen(true)} disabled={!ready}>我的账号</Button>
-    </header> : <header className="app-header"><Link href="/" aria-label="我们的这一期，返回节目列表" onClick={event => { if (!allowLeave()) event.preventDefault(); }}><Brand /></Link>
+    </header> : <header className="app-header"><Link href="/" aria-label="在场，返回节目列表" onClick={event => { if (!allowLeave()) event.preventDefault(); }}><Brand /></Link>
       <nav aria-label="主导航"><Link href="/" className={`header-link ${pathname === '/' ? 'current' : ''}`} onClick={event => { if (pathname !== '/' && !allowLeave()) event.preventDefault(); }}>创作</Link><Link href="/#recent" className="header-link" onClick={event => { if (pathname !== '/' && !allowLeave()) event.preventDefault(); }}>我的节目</Link>{ready && <Button variant="ghost" busy={busy} onClick={logout} aria-label="退出发起人身份"><LogOut size={16} /><span className="desktop-label">退出</span></Button>}</nav>
     </header>}
     {!isHome && <ModeBanner status={status} />}
@@ -144,9 +148,10 @@ export function SessionBoundary({ children }: { children: ReactNode }) {
       {(!ready || frozen) && !error && <div className="loading-page" role="status"><span className="loading-reel" />正在核对会话与媒体权限…</div>}
       <MediaAccessContext.Provider value={{ allowed: ready && !frozen, revision: mediaRevision, revalidate }}>
         {ready && <div key={userId} hidden={frozen} inert={frozen}>{children}</div>}
+        {ready && userId && <FloatingDirector ownerId={userId} status={status} allowed={!frozen} />}
       </MediaAccessContext.Provider>
     </main>
-    <footer className="app-footer"><span>OUR EPISODE <span aria-hidden="true">✳</span></span><span>生活没有剧本，但可以有片头。</span></footer>
+    <footer className="app-footer"><span>ZAICHANG <span aria-hidden="true">✳</span></span><span>生活没有剧本，但可以有片头。</span></footer>
     {isHome && <Dialog open={accountOpen && ready && !frozen} onClose={() => setAccountOpen(false)} title="我的账号">
       <p>你已通过邀请码进入。这台电脑上的节目和素材会保留，下次进入可以继续制作。</p>
       <ModeBanner status={status} />

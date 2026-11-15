@@ -111,3 +111,14 @@
   .premiere-shell .recent-section,.premiere-how { width:calc(100% - 40px); }.premiere-how ol { grid-template-columns:1fr; gap:25px; }.premiere-shell .app-footer { font-size:9px; }.premiere-extras { padding:0 20px; }
 }
 @media(prefers-reduced-motion:reduce) { .premiere-shell *, .premiere-shell *::before,.premiere-shell *::after { transition:none; animation:none; } }
+
+/* 在场: retain the supplied logo pixels and crop only the display frame. */
+.zaichang-mark, .premiere-brand > .zaichang-mark { position:relative; display:inline-block; flex:none; width:40px; height:40px; overflow:hidden; border-radius:10px; background:#fdf3e7; box-shadow:none; transform:none; }
+.zaichang-mark > img { position:absolute; width:156%; height:156%; max-width:none; left:50%; top:50%; transform:translate(-50%,-50%); object-fit:contain; }
+.zaichang-brand-link { display:inline-flex; align-items:center; gap:9px; }
+.premiere-title { display:flex; align-items:center; justify-content:center; }
+.premiere-title > .zaichang-hero-mark { width:78px; height:78px; margin-right:18px; border-radius:19px; background:#fdf3e7; }
+@media(max-width:700px) {
+  .zaichang-mark, .premiere-brand > .zaichang-mark { width:32px; height:32px; border-radius:8px; }
+  .premiere-title > .zaichang-hero-mark { width:52px; height:52px; margin-right:12px; border-radius:13px; }
+}

@@ -1,0 +1,27 @@
+.workspace.workspace { gap: 16px; }
+.workspace :global(.studio-heading) { gap: 16px; align-items: center; }
+.workspace :global(.studio-heading h1) { font-size: clamp(22px, 2.2vw, 30px); letter-spacing: -.7px; }
+.workspace :global(.studio-heading .eyebrow) { margin-bottom: 6px; }
+.tools { display: flex; gap: 4px; flex-shrink: 0; }
+.workspace :global(.step-nav) { scroll-margin-top: 16px; }
+.workspace :global(.step-nav button) { min-height: 44px; }
+.workspace :global(.review-only) { grid-template-columns: minmax(0, 1fr); }
+.workspace :global(.director-details) { margin: 0; }
+.workspace :global(.director-guide-dock) { margin: 0; }
+.workspace :global(.director-guide-dock > summary) { padding: 14px 18px; }
+.workspace :global(.director-guide-dock-hint) { display: none; }
+.workspace :global(.dirty-note) { margin: 0; padding: 7px 12px; font-size: 13px; }
+.feedback { margin: 0; color: #7b685c; font-size: 14px; line-height: 1.5; }
+.records.records { padding: 14px 18px; background: transparent; border-color: #e9e1d8; box-shadow: none; }
+.records > summary { cursor: pointer; font-size: 14px; font-weight: 600; color: #7b7066; }
+.records > summary > span { float: right; font-size: 13px; font-weight: 400; }
+.records[open] > summary { margin-bottom: 18px; }
+.records :global(.job-list) { max-height: 320px; overflow-y: auto; overscroll-behavior: contain; }
+@media (max-width: 600px) {
+  .workspace :global(.studio-heading) { flex-direction: row; align-items: flex-start; }
+  .workspace :global(.studio-heading h1) { font-size: 22px; }
+  .tools { flex-direction: column; gap: 0; }
+  .tools :global(.button) { padding: 4px 6px; min-height: 32px; font-size: 12px; }
+  .workspace :global(.step-nav button) { min-height: 50px; font-size: 11px; }
+  .workspace :global(.step-nav button > span:first-child) { width: 20px; height: 20px; }
+}

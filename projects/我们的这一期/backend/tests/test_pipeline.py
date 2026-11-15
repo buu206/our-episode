@@ -22,7 +22,7 @@ from sqlalchemy import select
 
 from app.config import Settings
 from app.main import create_app
-from app.models import Asset, Budget, Job, ModelCall, Version
+from app.models import Asset, Audit, Budget, Job, ModelCall, Version
 from app.services import media
 from app.services.director import DirectorError
 from app.services.pipeline import ModelServices
@@ -73,6 +73,7 @@ class FakeServices(ModelServices):
         self.failures = {kind: list(values) for kind, values in (failures or {}).items()}
         self.permissions = []
         self.forge_direction = False
+        self.explicit_plan = False
 
     def ready(self):
         return True, "Offline injected test services; not a real AI result."
@@ -125,11 +126,23 @@ class FakeServices(ModelServices):
 
     async def directions(self, evidence, assets, background, reservation, permit):
         self._permission("directions", reservation, permit)
-        span = dict(evidence[0])
+        span = {key: evidence[0][key] for key in ('asset_id', 'start', 'end', 'note')}
         if self.forge_direction:
             span["end"] = assets[span["asset_id"]] + 10
-        return {"result": {"directions": [{"id": "test-direction", "title": "测试这一刻",
-            "summary": "测试替身返回的有来源方向，不代表真实模型效果。", "evidence": [span]}],
+        direction = {"id": "test-direction", "title": "测试这一刻",
+                     "summary": "测试替身返回的有来源方向，不代表真实模型效果。", "evidence": [span]}
+        if self.explicit_plan:
+            speech = next(item for item in evidence if item.get('kind') == 'speech'
+                          and item['asset_id'] == span['asset_id'])
+            direction['evidence'].append({key: speech[key] for key in ('asset_id', 'start', 'end', 'note')})
+            direction["edit_plan"] = {"segments": [
+                {"asset_id": span["asset_id"], "start": .7, "end": 1.1, "caption": "蓝色后半段",
+                 "purpose": "先看后半段的静态测试画面", "evidence_ids": [evidence[0]['id']]},
+                {"asset_id": span["asset_id"], "start": speech['start'], "end": speech['end'],
+                 "caption": "完整测试话轮", "purpose": "保留完整原声；测试倒序而不截断表达",
+                 "evidence_ids": [speech['id']]},
+            ], "narration_text": "测试片头：蓝色画面。"}
+        return {"result": {"directions": [direction],
             "uncertainties": ["测试方向仍需人工选择。"]}, "usage": self._usage("directions")}
 
     async def tts(self, text, output, reservation, permit):
@@ -212,6 +225,49 @@ def analyze_and_review(client, auth, episode_id):
     return reviewed
 
 
+def test_overview_confirmation_preserves_source_precision_and_records_its_scope(client, services, voiced_video_bytes):
+    auth, episode_id, _ = create_with_asset(client, voiced_video_bytes)
+    job = request(client, f"/episodes/{episode_id}/analysis", auth)
+    advance(client, job['id'])
+    before = episode_state(client, episode_id)
+    items = deepcopy(before['evidence'])
+    items[0].update(start=.23, end=1.37)
+    body = {'revision': before['evidence_revision'], 'items': items,
+            'confirmed': True, 'confirmation_mode': 'overview'}
+    reviewed = request(client, f"/episodes/{episode_id}/evidence", auth, method='PUT', body=body)
+    assert reviewed['analysis_state'] == 'confirmed'
+    assert reviewed['evidence'] == items
+    assert reviewed['directions'] == []
+    assert services.counts['directions'] == 0
+    with client.app.state.repo.transaction() as db:
+        audit = db.scalar(select(Audit).where(Audit.target_id == episode_id, Audit.action == 'evidence_confirmed'))
+        assert audit.details == {'revision': reviewed['evidence_revision'], 'confirmation_mode': 'overview'}
+    stale = request(client, f"/episodes/{episode_id}/evidence", auth, method='PUT', body=body, expected=409)
+    assert stale['error']['code'] == 'STALE_REVISION'
+    body.update(revision=reviewed['evidence_revision'], confirmed=False)
+    assert request(client, f"/episodes/{episode_id}/evidence", auth, method='PUT', body=body, expected=409)['error']['code'] == 'CONFIRM_REQUIRED'
+    assert episode_state(client, episode_id)['evidence'] == items
+
+
+def test_transcript_does_not_merge_distinct_local_speakers(client, services, voiced_video_bytes, monkeypatch):
+    async def multiple(chunks, reservation, permit):
+        services._permission('asr', reservation, permit)
+        common = {'asset_id': chunks[0].asset_id, 'speaker_scope': 'chunk-0', 'speaker': 'S1'}
+        return {'result': [{**common, 'start': .1, 'end': .8, 'text': '第一人'},
+                           {**common, 'start': .2, 'end': .5, 'text': '重叠词'},
+                           {**common, 'start': .3, 'end': 1.0, 'text': '第二人', 'speaker': 'S2'},
+                           {**common, 'start': 1.1, 'end': 1.9, 'text': '另一块', 'speaker_scope': 'chunk-1'}],
+                'usage': services._usage('asr')}
+    monkeypatch.setattr(services, 'asr', multiple)
+    auth, eid, _ = create_with_asset(client, voiced_video_bytes)
+    job = request(client, f'/episodes/{eid}/analysis', auth)
+    advance(client, job['id'])
+    speech = [x for x in episode_state(client, eid)['evidence'] if x['kind'] == 'speech']
+    assert [x['note'] for x in speech] == ['第一人 重叠词', '第二人', '另一块']
+    assert speech[0]['end'] == .8
+    assert all('_speaker' not in x for x in speech)
+
+
 def select_proposal(client, auth, episode_id, packaging="standard"):
     job = request(client, f"/episodes/{episode_id}/directions", auth)
     advance(client, job["id"])
@@ -237,8 +293,10 @@ def render_confirm_export(client, auth, episode_id, version_id):
     return exported.content
 
 
+@pytest.mark.parametrize("explicit_plan", [False, True])
 def test_complete_review_direction_narration_render_export_and_immutable_revision(
-        client, services, voiced_video_bytes):
+        client, services, voiced_video_bytes, explicit_plan):
+    services.explicit_plan = explicit_plan
     auth, eid, asset = create_with_asset(client, voiced_video_bytes)
     repo = client.app.state.repo
     with repo.factory() as db:
@@ -248,7 +306,10 @@ def test_complete_review_direction_narration_render_export_and_immutable_revisio
     assert reviewed["analysis_coverage"][0]["asset_id"] == asset["id"]
     version = select_proposal(client, auth, eid)
     assert version["origin"] == "demo"  # injected fixtures must never claim real AI
-    assert version["narration_text"] == "测试这一刻"
+    assert version["narration_text"] == ("测试片头：蓝色画面。" if explicit_plan else "测试这一刻")
+    if explicit_plan:
+        assert [segment["start"] for segment in version["segments"]] == [.7, .1]
+        assert [segment["caption"] for segment in version["segments"]] == ["蓝色后半段", "完整测试话轮"]
     assert version["narration_approved"] is False and version["narration_ready"] is False
     assert request(client, f"/versions/{version['id']}/render", auth, expected=409)["error"]["code"] == "NARRATION_REQUIRED"
     assert request(client, f"/versions/{version['id']}/narration", auth,
@@ -265,7 +326,8 @@ def test_complete_review_direction_narration_render_export_and_immutable_revisio
         old_segments, old_narration = deepcopy(old.segments), old.narration_text
     info = media.probe(output)
     assert (info["width"], info["height"]) == (1280, 720)
-    assert 1.5 <= info["duration"] < 2 and info["has_audio"]
+    expected_duration = sum(s["end"] - s["start"] for s in old_segments) + .6
+    assert abs(info["duration"] - expected_duration) < .1 and info["has_audio"]
     media._run("ffmpeg", ["-nostdin", "-v", "error", "-xerror", "-threads", "2",
         "-protocol_whitelist", "file,pipe", "-format_whitelist", "mov", "-enable_drefs", "0",
         "-i", str(output), "-f", "null", "-"], timeout=20, code="MEDIA_DECODE_FAILED")
@@ -302,7 +364,9 @@ def test_default_production_services_refuse_cloud_without_reserving(settings, vo
         result = request(default, f"/episodes/{eid}/analysis", auth, expected=409)
         assert result["error"]["code"] == "CLOUD_DISABLED"
         with default.app.state.repo.factory() as db:
-            assert not list(db.scalars(select(Job)))
+            jobs = list(db.scalars(select(Job)))
+            assert len(jobs) == 1 and jobs[0].kind == 'asset_upload' and jobs[0].state == 'succeeded'
+            assert jobs[0].payload.get('artifacts', []) == []
             assert not list(db.scalars(select(Budget)))
             assert not list(db.scalars(select(ModelCall)))
 

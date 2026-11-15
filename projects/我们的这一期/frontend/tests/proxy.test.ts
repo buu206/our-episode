@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { proxyRequest, type ProxyOptions } from "../src/lib/server-proxy";
+import { VOICE_BODY_LIMIT } from "../src/lib/routes";
 
 const episode = "a".repeat(32);
 const token = "fixture-token-1234";
@@ -24,6 +25,45 @@ async function run(path: string, init: RequestInit & { duplex?: "half" }, fetchI
 afterEach(() => vi.useRealTimers());
 
 describe("restricted same-origin proxy", () => {
+  it.each(['pause','resume','cancel'])("permits only bounded director control %s", async action => {
+    const upstream=transport(()=>Response.json({id:episode,kind:'director_run',state:'paused'}));
+    expect((await run(`/versions/${episode}/director-run/${action}`,{method:'POST',body:'{}'},upstream)).status).toBe(200);
+    expect((await run(`/versions/${episode}/director-run/approve`,{method:'POST',body:'{}'},upstream)).status).toBe(404);
+    expect((await run(`/versions/${episode}/director-run/${action}`,{method:'GET'},upstream)).status).toBe(404);
+  });
+  it.each(['review', 'visual-review'])("permits an owner %s without opening arbitrary version actions", async (action) => {
+    const upstream = transport(() => Response.json({ id: episode, kind: 'technical_review', state: 'queued' }));
+    const response = await run(`/versions/${episode}/${action}`, { method: 'POST', body: '{}' }, upstream);
+    expect(response.status).toBe(200);
+    expect(upstream).toHaveBeenCalledOnce();
+    expect((await run(`/versions/${episode}/${action}`, { method: 'DELETE' }, upstream)).status).toBe(404);
+    expect((await run(`/versions/${episode}/anything`, { method: 'POST', body: '{}' }, upstream)).status).toBe(404);
+  });
+  it("bounds voice uploads separately and permits owner recovery reads", async () => {
+    const upstream = transport(() => Response.json({ id: episode }));
+    const path = `/episodes/${episode}/director/voice`;
+    const oversized = await run(path, { method: "POST", body: "audio", headers: {
+      "Content-Type": "multipart/form-data; boundary=fixture", "Content-Length": String(VOICE_BODY_LIMIT + 1),
+    } }, upstream);
+    expect(oversized.status).toBe(413); expect(upstream).not.toHaveBeenCalled();
+    const drain = transport(async (_url, init) => { await new Response(init.body).arrayBuffer(); return Response.json({ id: episode }); });
+    const streamed = await run(path, { method: "POST", body: "x".repeat(VOICE_BODY_LIMIT + 1),
+      headers: { "Content-Type": "multipart/form-data; boundary=fixture" } }, drain);
+    expect(streamed.status).toBe(413);
+    const status = await run(path + "/status", {}, upstream); expect(status.status).toBe(200); await status.text();
+    const recovery = await run(path + "/by-client/voice-request-123", {}, upstream); expect(recovery.status).toBe(200); await recovery.text();
+    const invalid = await run(path + "/by-client/short", {}, upstream); expect(invalid.status).toBe(404);
+  });
+  it("forwards director requirements only as an owner POST", async () => {
+    const upstream = transport((_url, init) => {
+      expect(new Headers(init.headers).get("cookie")).toBe(`episode_session=${token}`);
+      return Response.json({ revision: 1 });
+    });
+    const result = await run(`/episodes/${episode}/director/messages`, { method: "POST", body: JSON.stringify({ revision: 0, client_id: "request-one", choice: "auto" }) }, upstream);
+    expect(result.status).toBe(200); await result.text();
+    const invalid = await run(`/episodes/${episode}/director/messages`, { method: "GET" }, upstream);
+    expect(invalid.status).toBe(404); expect(upstream).toHaveBeenCalledTimes(1);
+  });
   it("accepts Next's internal localhost URL only with the configured external Host and Origin", async () => {
     const upstream = transport(() => Response.json({ ok: true }));
     const adapted = new Request("http://localhost:3000/api/v1/episodes", { method: "POST", body: "{}", headers: {

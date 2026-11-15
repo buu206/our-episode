@@ -7,6 +7,7 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 import shutil
 import sys
 import tempfile
@@ -16,6 +17,21 @@ from PIL import Image
 
 from . import media
 from .media import MediaError
+
+
+def reusable_narration(data_dir: Path, relative: str) -> Path:
+    """Validate a private, bounded generated WAV before sharing its reference.
+
+    Both versions belong to one episode with identical source spans; episode
+    retention and source invalidation therefore apply to both references.
+    """
+    if not isinstance(relative, str) or not re.fullmatch(r"outputs/[0-9a-f]{32}\.wav", relative):
+        raise MediaError("NARRATION_MISSING", "已生成的旁白文件无效，请保留原版本并重新检查。")
+    path = data_dir / relative
+    if path.parent.is_symlink() or path.is_symlink():
+        raise MediaError("NARRATION_MISSING", "已生成的旁白文件无效，请保留原版本并重新检查。")
+    _narration(path)
+    return path
 
 
 def _narration(path: Path) -> tuple[bytes, int, int]:

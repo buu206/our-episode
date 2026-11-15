@@ -146,8 +146,8 @@ small,.small { font-size:12px; }
 .panel .section-title { margin-bottom:18px; }
 .panel .section-title h2 { font-size:21px; }
 .media-player { min-width:0; }
-.media-screen { overflow:hidden; border:1.5px solid var(--ink); border-radius:13px; background:#222421; aspect-ratio:16/9; display:grid; place-items:center; }
-.media-screen video { width:100%; height:100%; max-height:65vh; object-fit:contain; }
+.media-screen { position:relative; overflow:hidden; border:1.5px solid var(--ink); border-radius:13px; background:#222421; aspect-ratio:16/9; max-height:65dvh; display:grid; place-items:center; }
+.media-screen video { position:absolute; inset:0; display:block; width:100%; height:100%; object-fit:contain; }
 .media-empty { text-align:center; padding:28px; color:#c4c2b6; display:flex; flex-direction:column; align-items:center; gap:12px; }
 .media-empty strong { font-size:17px; color:#eee9db; }
 .media-empty span { font-size:12px; max-width:330px; }
@@ -157,6 +157,39 @@ small,.small { font-size:12px; }
 .upload-zone input { max-width:450px; }
 .upload-zone p { font-size:13px; color:var(--muted); }
 .upload-zone svg { color:var(--orange); }
+.pending-files { width:100%; min-width:0; text-align:left; }
+.pending-files ul { list-style:none; display:grid; gap:8px; padding:0; margin:10px 0 0; }
+.pending-files li { display:flex; align-items:center; gap:12px; padding:10px 12px; background:white; border:1px solid var(--line); border-radius:10px; }
+.pending-files li > span { flex:1; min-width:0; overflow-wrap:anywhere; }
+.pending-files small { display:block; color:var(--muted); margin-top:4px; }
+.asset-saved { display:flex; align-items:center; gap:6px; color:#276448; font-size:12px; margin:8px 0; }
+.dialog.source-preview-dialog { width:min(920px,calc(100vw - 28px)); }
+.dialog.portrait-preview { width:min(480px,calc(100vw - 28px)); }
+.source-preview-dialog .media-screen { max-height:60dvh; margin-inline:auto; }
+.source-preview-dialog figcaption { justify-content:center; }
+.source-preview-dialog .dialog-content > .muted { text-align:center; }
+.source-preview-dialog .dialog-heading h2 { font-size:22px; }
+.source-preview-dialog .dialog-heading { margin-bottom:12px; }
+.review-intro { color:var(--muted); line-height:1.8; margin:0 0 16px; max-width:66ch; }
+.review-stats { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:20px; }
+.review-stats span { padding:5px 10px; border-radius:20px; background:#f5f1ec; font-size:12px; }
+.review-overview { display:grid; gap:14px; }
+.review-summary { padding:18px 20px 12px; border:1px solid var(--line); border-radius:18px; background:rgba(255,255,255,.65); }
+.review-summary-heading { display:flex; align-items:center; gap:12px; }
+.review-summary-heading h3 { flex:1; min-width:0; overflow-wrap:anywhere; font-size:14px; margin:0; }
+.review-summary-heading > .muted { flex-shrink:0; font-size:12px; }
+.review-excerpts { display:grid; grid-template-columns:1fr 1fr; gap:20px; margin:15px 0 4px; }
+.review-excerpts > div { min-width:0; }
+.review-excerpts .eyebrow { font-size:10px; letter-spacing:.1em; color:var(--muted); }
+.review-excerpts p { margin:7px 0; font-size:13px; line-height:1.8; display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; overflow-wrap:anywhere; }
+.review-confirmation { margin-top:24px; }
+.review-confirmation > .button { min-width:180px; }
+.review-confirmation .muted { margin:10px 0 0; font-size:12px; }
+.review-confirmed { display:flex; align-items:center; gap:9px; color:#32644d; background:#eef6ee; padding:14px 18px; border-radius:14px; margin:0; font-size:14px; }
+.review-details-toggle { margin-top:22px; padding-top:14px; border-top:1px solid var(--line); }
+.review-details-toggle .button { font-size:13px; }
+#review-details { padding-top:12px; }
+@media (max-width:600px) { .review-summary { padding:15px 14px 9px; }.review-excerpts { grid-template-columns:1fr; gap:8px; }.review-confirmation > .button { width:100%; } }
 .upload-list,.asset-grid,.segment-list,.version-list,.evidence-list,.direction-list,.job-list { display:grid; gap:12px; margin-top:18px; }
 .asset-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
 .asset-card,.segment-card,.evidence-card,.direction-card,.version-card,.job-card,.upload-item,.cleanup-card { padding:17px; border:1px solid #e8e3ef; border-radius:12px; background:#ffffff; min-width:0; overflow-wrap:anywhere; }

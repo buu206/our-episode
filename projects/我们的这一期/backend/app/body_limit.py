@@ -21,7 +21,9 @@ class BodyLimitMiddleware:
             scope['path'].endswith('/assets') or scope['path'] == '/api/v1/participant/submissions/upload')
         is_evidence = scope['method'] == 'PUT' and re.fullmatch(
             r'/api/v1/episodes/[^/]+/evidence', scope['path']) is not None
-        limit = self.upload_limit if is_upload else 2 * 1024 * 1024 if is_evidence else 65536
+        is_director_voice = scope['method'] == 'POST' and re.fullmatch(
+            r'/api/v1/episodes/[a-f0-9]{32}/director/voice', scope['path']) is not None
+        limit = 13 * 1024 * 1024 if is_director_voice else self.upload_limit if is_upload else 2 * 1024 * 1024 if is_evidence else 65536
         headers = dict(scope.get('headers', []))
         try:
             declared = int(headers.get(b'content-length', b'0'))

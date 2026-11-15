@@ -5,6 +5,23 @@ import { MediaAccessContext, MediaPlayer } from '@/components/ui';
 
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
+it('uses the loaded source dimensions and discards the prior portrait ratio when switching sources', () => {
+  vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {});
+  vi.spyOn(HTMLMediaElement.prototype, 'load').mockImplementation(() => {});
+  Object.defineProperty(document, 'hidden', { configurable: true, value: false });
+  const view = render(<MediaPlayer src="/api/v1/assets/portrait/media" title="竖屏" />);
+  const portrait = screen.getByLabelText('竖屏');
+  Object.defineProperties(portrait, { videoWidth: { value: 720 }, videoHeight: { value: 1280 } });
+  fireEvent.loadedMetadata(portrait);
+  expect(view.container.querySelector('.media-screen')).toHaveStyle({ aspectRatio: '720 / 1280' });
+  view.rerender(<MediaPlayer src="/api/v1/assets/landscape/media" title="横屏" />);
+  expect(view.container.querySelector('.media-screen')).not.toHaveStyle({ aspectRatio: '720 / 1280' });
+  const landscape = screen.getByLabelText('横屏');
+  Object.defineProperties(landscape, { videoWidth: { value: 1280 }, videoHeight: { value: 720 } });
+  fireEvent.loadedMetadata(landscape);
+  expect(view.container.querySelector('.media-screen')).toHaveStyle({ aspectRatio: '1280 / 720' });
+});
+
 it('restores the authorized source after StrictMode cleanup and still clears hidden, revoked and unmounted media', () => {
   Object.defineProperty(document, 'hidden', { configurable: true, value: false });
   const pause = vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {});

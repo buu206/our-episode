@@ -1,7 +1,7 @@
 /** The core UI may reach only these existing API routes, never an arbitrary upstream URL. */
 export type ApiMethod = "GET" | "HEAD" | "POST" | "PUT" | "DELETE";
 export type ApiRole = "owner" | "participant" | "viewer";
-export type RouteKind = "status" | "auth" | "ok" | "episodes" | "episode" | "asset" | "impact" | "version" | "job" | "media"
+export type RouteKind = "subtitles" | "directorVoices" | "directorVoice" | "directorVoiceStatus" | "directorChat" | "directorChatAction" | "directorState" | "retention" | "status" | "auth" | "ok" | "episodes" | "episode" | "asset" | "impact" | "version" | "job" | "media"
   | "participantAuth" | "invitation" | "invitationCreated" | "invitations" | "submission" | "submissions"
   | "revision" | "objection" | "objections" | "share" | "shareCreated" | "shares" | "viewerAuth" | "viewerShare";
 export type RouteContract = { kind: RouteKind; role: ApiRole; public: boolean; upload: boolean; bodyLimit: number };
@@ -9,13 +9,22 @@ const objectId = "[a-f0-9]{32}";
 const ordinaryLimit = 65_536;
 export const EVIDENCE_BODY_LIMIT = 2 * 1024 * 1024;
 export const UPLOAD_BODY_LIMIT = 1024 ** 3 + 1024 ** 2;
+export const VOICE_BODY_LIMIT = 12 * 1024 ** 2 + 65_536;
 const routes: Array<[RegExp, Partial<Record<ApiMethod, RouteKind>>]> = [
   [/^\/status$/, { GET: "status" }],
   [/^\/auth\/login$/, { POST: "auth" }],
   [/^\/auth\/me$/, { GET: "auth" }],
   [/^\/auth\/logout$/, { POST: "ok" }],
   [/^\/episodes$/, { GET: "episodes", POST: "episode" }],
-  [new RegExp(`^/episodes/${objectId}$`), { GET: "episode" }],
+  [new RegExp(`^/episodes/${objectId}$`), { GET: "episode", DELETE: "ok" }],
+  [new RegExp(`^/episodes/${objectId}/retention$`), { GET: "retention" }],
+  [new RegExp(`^/episodes/${objectId}/director/messages$`), { POST: "directorState" }],
+  [new RegExp(`^/episodes/${objectId}/director/chat$`), { GET: "directorChat", POST: "job" }],
+  [new RegExp(`^/episodes/${objectId}/director/actions/${objectId}$`), { POST: "directorChatAction" }],
+  [new RegExp(`^/episodes/${objectId}/director/voice/status$`), { GET: "directorVoiceStatus" }],
+  [new RegExp(`^/episodes/${objectId}/director/voice$`), { GET: "directorVoices", POST: "directorVoice" }],
+  [new RegExp(`^/episodes/${objectId}/director/voice/${objectId}$`), { GET: "directorVoice" }],
+  [new RegExp(`^/episodes/${objectId}/director/voice/by-client/[A-Za-z0-9_-]{8,80}$`), { GET: "directorVoice" }],
   [new RegExp(`^/episodes/${objectId}/assets$`), { POST: "asset" }],
   [new RegExp(`^/episodes/${objectId}/versions$`), { POST: "version" }],
   [new RegExp(`^/episodes/${objectId}/(?:analysis|directions)$`), { POST: "job" }],
@@ -24,7 +33,9 @@ const routes: Array<[RegExp, Partial<Record<ApiMethod, RouteKind>>]> = [
   [new RegExp(`^/assets/${objectId}$`), { DELETE: "ok" }],
   [new RegExp(`^/assets/${objectId}/impact$`), { GET: "impact" }],
   [new RegExp(`^/assets/${objectId}/media$`), { GET: "media", HEAD: "media" }],
-  [new RegExp(`^/versions/${objectId}/(?:render|narration)$`), { POST: "job" }],
+  [new RegExp(`^/versions/${objectId}/(?:render|narration|review|visual-review)$`), { POST: "job" }],
+  [new RegExp(`^/versions/${objectId}/director-run/(?:pause|resume|cancel)$`), { POST: "job" }],
+  [new RegExp(`^/versions/${objectId}/subtitles$`), { GET: "subtitles" }],
   [new RegExp(`^/versions/${objectId}/confirm$`), { POST: "version" }],
   [new RegExp(`^/versions/${objectId}/(?:media|export)$`), { GET: "media", HEAD: "media" }],
   [new RegExp(`^/jobs/${objectId}$`), { GET: "job" }],
@@ -70,16 +81,16 @@ export function routeContract(path: string, method: string): RouteContract | nul
   if (viewerMedia) {
     if (!search || !/^revision=[1-9]\d*$/.test(search) || !Number.isSafeInteger(Number(search.slice(9)))) return null;
   } else if (search !== undefined) {
-    if (method !== "DELETE" || !new RegExp(`^/(?:assets|participant/submissions)/${objectId}$`).test(pathname)
+    if (method !== "DELETE" || !new RegExp(`^/(?:episodes|assets|participant/submissions)/${objectId}$`).test(pathname)
       || !/^confirm=(?:true|false)$/.test(search)) return null;
   }
   for (const [pattern, methods] of routes) {
     const kind = methods[method as ApiMethod];
     if (kind && pattern.test(pathname)) {
       const role: ApiRole = pathname.startsWith("/participant/") ? "participant" : pathname.startsWith("/viewer/") ? "viewer" : "owner";
-      const upload = (kind === "asset" && method === "POST") || pathname === "/participant/submissions/upload";
+      const upload = ((kind === "asset" || kind === "directorVoice") && method === "POST") || pathname === "/participant/submissions/upload";
       return { kind, role, upload, public: pathname === "/status" || /^\/(?:participant\/|viewer\/)?auth\/login$/.test(pathname),
-        bodyLimit: upload ? UPLOAD_BODY_LIMIT : pathname.endsWith("/evidence") ? EVIDENCE_BODY_LIMIT : ordinaryLimit };
+        bodyLimit: upload ? (kind === "directorVoice" ? VOICE_BODY_LIMIT : UPLOAD_BODY_LIMIT) : pathname.endsWith("/evidence") ? EVIDENCE_BODY_LIMIT : ordinaryLimit };
     }
   }
   return null;

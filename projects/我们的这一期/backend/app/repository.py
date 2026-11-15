@@ -6,7 +6,7 @@ from sqlalchemy.orm import sessionmaker
 from alembic import command
 from alembic.config import Config
 from .config import BACKEND
-from .models import Audit, Budget, Job, ModelCall, Version
+from .models import Audit, Budget, Episode, Job, ModelCall, Version
 
 
 class DomainError(Exception):
@@ -28,6 +28,7 @@ class Repository:
         def sqlite_settings(connection, _):
             connection.execute('PRAGMA journal_mode=WAL')
             connection.execute('PRAGMA foreign_keys=ON')
+            connection.execute('PRAGMA secure_delete=ON')
             connection.execute('PRAGMA busy_timeout=15000')
 
         cfg = Config(str(BACKEND / 'alembic.ini'))
@@ -36,6 +37,8 @@ class Repository:
             cfg.attributes['connection'] = connection
             command.upgrade(cfg, 'head')
         self.factory = sessionmaker(self.engine, expire_on_commit=False)
+        from .services.retention import enroll_existing
+        enroll_existing(self)
 
     @contextmanager
     def transaction(self):
@@ -54,6 +57,10 @@ class Repository:
         item = db.get(model, item_id)
         if item is None or item.owner_id != owner:
             raise DomainError('NOT_FOUND', '内容不存在或无权访问。', 404)
+        episode_id = item.id if model is Episode else getattr(item, 'episode_id', None)
+        if episode_id:
+            from .services.retention import require_available
+            require_available(db, episode_id)
         return item
 
     @staticmethod

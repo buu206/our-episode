@@ -177,7 +177,7 @@ export function ShowOpening() {
     };
   }, []);
 
-  return <dialog ref={dialogRef} className={styles.opening} aria-label="我们的这一期开场动画" aria-modal="true">
+  return <dialog ref={dialogRef} className={styles.opening} aria-label="在场开场动画" aria-modal="true">
     <div className={styles.openingFrame} aria-hidden="true">
       <div className={`${styles.curtain} ${styles.curtainLeft}`} />
       <div className={`${styles.curtain} ${styles.curtainRight}`} />
@@ -188,8 +188,7 @@ export function ShowOpening() {
       </div>
       <div className={styles.openingWordmark}>
         <span className={styles.openingEyebrow}>生活综艺 · 现在开场</span>
-        <span className={styles.wordmarkTop}>我们的</span>
-        <span className={styles.wordmarkBottom}>这一期<span className={styles.wordmarkDot}>!</span></span>
+        <span className={styles.wordmarkBottom}>在场<span className={styles.wordmarkDot}>!</span></span>
         <Star className={styles.wordmarkStar} />
         <span className={styles.openingRule} />
       </div>

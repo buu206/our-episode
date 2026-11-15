@@ -72,6 +72,7 @@ export default function CollaborationManager({ episodeId }: { episodeId: string 
     } catch (cause) {
       if (mounted.current && pageEpoch === epoch.current && generation === sequence.current && !controller.signal.aborted) {
         setFresh(false); setError(message(cause));
+        if (cause instanceof AppError && cause.code === 'EPISODE_EXPIRED') setData(null);
       }
       throw cause;
     }

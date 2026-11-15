@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { api, AppError, exportUrl, mediaUrl, prepareExport, setCsrf, uploadAsset } from "../src/lib/api";
+import { api, AppError, exportUrl, mediaUrl, prepareExport, setCsrf, uploadAsset, uploadDirectorVoice } from "../src/lib/api";
 import { EpisodeSchema, SegmentSchema, type Episode, type Status } from "../src/lib/types";
 
 const id = "a".repeat(32);
@@ -14,6 +14,17 @@ beforeEach(() => setCsrf(null));
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); setCsrf(null); });
 
 describe("core API contract", () => {
+  it("saves bounded director requirements through the owner route and validates its state", async () => {
+    setCsrf("csrf-fixture");
+    const state = { revision: 1, focus: "conversation", notes: "", directions_current: false,
+      messages: [{ id: "request-01", role: "user", text: "保留聊天", created_at: "2026-11-13T12:00:00Z" }] };
+    const fetcher = vi.fn(async (_path, init: RequestInit) => {
+      expect(new Headers(init.headers).get("x-csrf-token")).toBe("csrf-fixture");
+      return Response.json(state);
+    }); vi.stubGlobal("fetch", fetcher);
+    expect(await api(`/episodes/${id}/director/messages`, { method: "POST", body: { revision: 0, client_id: "request-01", choice: "conversation" } })).toEqual(state);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
   it("preserves disabled-cloud / enabled-demo distinction and makes same-origin no-store reads", async () => {
     const fetcher = vi.fn(async (_path, init: RequestInit) => {
       expect(init.credentials).toBe("same-origin"); expect(init.cache).toBe("no-store");
@@ -41,6 +52,17 @@ describe("core API contract", () => {
   it("matches backend Unicode character limits, not UTF-16 code units", () => {
     expect(SegmentSchema.safeParse({ asset_id: id, start: 0, end: 1, caption: "😀".repeat(100) }).success).toBe(true);
     expect(SegmentSchema.safeParse({ asset_id: id, start: 0, end: 1, caption: "😀".repeat(101) }).success).toBe(false);
+  });
+
+  it("preserves director evidence and transitions across response parsing", async () => {
+    const segment = { asset_id: id, start: 0, end: 4, caption: "开场", purpose: "交代本期场景",
+      evidence_ids: ["source-one"], transition: "cut", transition_duration: 0 };
+    const version = { id, title: "导演版", state: "draft", origin: "ai", segments: [segment],
+      media_url: null, job_id: null, error: null, base_version_id: null, created_at: "2026-11-13T00:00:00Z",
+      narration_text: "", narration_approved: false, narration_ready: false, packaging: "original", evidence_revision: 1 };
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ ...episode, versions: [version] })));
+    const result = await api<Episode>(`/episodes/${id}`);
+    expect(result.versions[0].segments[0]).toEqual(segment);
   });
 
   it("keeps CSRF only in memory, sends it for writes, and clears it at logout boundaries", async () => {
@@ -144,6 +166,30 @@ class FakeXHR {
 
 describe("XHR upload recovery", () => {
   beforeEach(() => { FakeXHR.instances = []; vi.stubGlobal("XMLHttpRequest", FakeXHR); setCsrf("csrf-fixture"); });
+  it("sends voice only with explicit consent and a bounded multipart owner request", async () => {
+    const consent = { client_id: "voice-request-123", confirm_send: true, accept_unknown_retention: true } as const;
+    const result = { id, job_id: id, state: "queued", text: null, error: null, mode: "cloud" };
+    const pending = uploadDirectorVoice(id, new File(["audio"], "recording.webm", { type: "audio/webm" }), consent);
+    const xhr = FakeXHR.instances[0]!;
+    expect(xhr.open).toHaveBeenCalledWith("POST", `/api/v1/episodes/${id}/director/voice`);
+    expect(xhr.headers.get("x-csrf-token")).toBe("csrf-fixture");
+    expect(xhr.headers.has("content-type")).toBe(false);
+    expect((xhr.body as FormData).get("accept_unknown_retention")).toBe("true");
+    expect((xhr.body as FormData).get("client_id")).toBe(consent.client_id);
+    expect(xhr.timeout).toBe(120_000);
+    xhr.responseText = JSON.stringify(result); xhr.onload?.(); expect(await pending).toEqual(result);
+    await expect(uploadDirectorVoice(id, new File([""], "empty.webm"), consent)).rejects.toMatchObject({ code: "UPLOAD_TOO_LARGE" });
+    await expect(uploadDirectorVoice(id, new File(["x"], "fake.exe"), consent)).rejects.toMatchObject({ code: "INVALID_FORMAT" });
+    await expect(uploadDirectorVoice(id, new File(["x"], "recording.wav"), { ...consent, accept_unknown_retention: false } as unknown as typeof consent)).rejects.toMatchObject({ code: "INVALID_REQUEST" });
+    expect(FakeXHR.instances).toHaveLength(1);
+  });
+  it("keeps uncertain voice requests for by-client reconciliation without automatic resend", async () => {
+    const pending = uploadDirectorVoice(id, new File(["audio"], "recording.m4a"),
+      { client_id: "voice-request-unknown", confirm_send: true, accept_unknown_retention: true });
+    FakeXHR.instances[0]!.ontimeout?.();
+    await expect(pending).rejects.toMatchObject({ uncertain: true });
+    expect(FakeXHR.instances).toHaveLength(1);
+  });
   it("reports real transport progress while awaiting server validation, without overriding multipart boundary", async () => {
     const progress = vi.fn(); const pending = uploadAsset(id, new File(["test"], "fixture.mp4"), progress);
     const xhr = FakeXHR.instances[0]!;

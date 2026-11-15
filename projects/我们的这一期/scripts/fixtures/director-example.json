@@ -1,0 +1,8 @@
+{
+  "assets": {"example_a": 10.0, "example_b": 8.0},
+  "verified_evidence": [
+    {"asset_id": "example_a", "start": 1.0, "end": 4.0, "note": "合成测试场景：一位参与者将盘子摆到桌上。"},
+    {"asset_id": "example_b", "start": 2.0, "end": 6.0, "note": "合成测试场景：另一位参与者举杯。没有可核实的对白或人物关系。"}
+  ],
+  "background_context": "这是虚构的接口测试输入，不是真实人物素材或真实效果验收。希望做一段聚会回顾。"
+}

@@ -1,6 +1,8 @@
 'use client';
 
 import Link from 'next/link';
+import { BrandMark } from './brand-mark';
+import { ProductionChrome } from './production-chrome';
 import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { LockKeyhole, LogOut, RefreshCw } from 'lucide-react';
@@ -185,8 +187,8 @@ export function ViewerPortal({ shareId }: { shareId: string }) {
   function retryMedia() { failedSource.current = ''; void check({ announce: true }); }
   function mediaFailed() { failedSource.current = source || ''; freeze(); void check({ announce: true }); }
 
-  return <div className={`portal-page ${styles.watch}`}>
-    <header className={`portal-header ${styles.watchHeader}`}><Link href={`/watch/${shareId}`} className={styles.brand}>我们的这一期</Link><span className="chip">受邀观看 · 独立身份</span>
+  return <div className="production-shell viewer-shell"><ProductionChrome label="私密放映" /><div className={`portal-page ${styles.watch}`}>
+    <header className={`portal-header ${styles.watchHeader}`}><Link href={`/watch/${shareId}`} className={`${styles.brand} zaichang-brand-link`}><BrandMark />在场</Link><span className="chip">受邀观看 · 独立身份</span>
       {identity && <Button variant="ghost" busy={busy} onClick={() => void logout()}><LogOut size={16} />退出观看身份</Button>}</header>
     <main id="main"><header className="portal-hero"><div><span className="eyebrow">把确认过的片段，一起看</span><h1>{share?.title && phase !== 'login' ? share.title : '一起看这一版'}</h1><p>只属于这条邀请的观看范围。</p></div></header>
       {announcement && <Notice>{announcement}</Notice>}
@@ -210,5 +212,5 @@ export function ViewerPortal({ shareId }: { shareId: string }) {
         <p>分享更新由发起人明确确认，不会自动跟随新版本。页面在前台定期核对，离开前台会停播；网络中断或核对失败时也保持停止。</p>
         <p>请勿擅自扩大传播范围。可播放的内容仍可能被保存或录屏，产品不能收回已接收的副本。当前为本机验收地址，不会代你发送邀请。</p></section>
     </main>
-  </div>;
+  </div></div>;
 }

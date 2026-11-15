@@ -19,6 +19,8 @@ import tempfile
 
 from PIL import Image, ImageDraw, ImageFont
 
+from .editing import timeline, validate_transitions
+
 
 class MediaError(Exception):
     """An error safe to return to clients without exposing paths or stderr."""
@@ -294,6 +296,18 @@ def render(segments: list[dict], output: Path, title: str = "") -> dict:
         raise MediaError("MEDIA_INVALID_SEGMENT", "请提供 1 至 32 个有效片段。")
     if not isinstance(title, str) or len(title) > MAX_TITLE_LENGTH:
         raise MediaError("MEDIA_INVALID_TEXT", "标题不得超过 120 个字符。")
+    try:
+        validate_transitions(segments)
+        timings = timeline(segments)
+    except (ValueError, TypeError, KeyError, AttributeError, OverflowError):
+        raise MediaError("MEDIA_INVALID_SEGMENT", "转场类型、时长或相邻片段范围无效。") from None
+    transitioning = any(item.overlap > 0 for item in timings)
+    # A submitted interview is a confirmed expression. Never crossfade either
+    # edge of it: that would replace part of the agreed audio with another clip.
+    for index, timing in enumerate(timings):
+        if timing.overlap and (segments[index].get("_preserve_expression") is True
+                or segments[index - 1].get("_preserve_expression") is True):
+            raise MediaError("MEDIA_INVALID_SEGMENT", "已确认采访前后只能直接切换，不能覆盖其声音。")
 
     prepared: list[tuple[_Source, float, float, str]] = []
     sources: dict[Path, _Source] = {}
@@ -320,7 +334,7 @@ def render(segments: list[dict], output: Path, title: str = "") -> dict:
         source = sources[local_path]
         if end > source.duration + 0.001:
             raise MediaError("MEDIA_INVALID_SEGMENT", "片段引用超出了原视频时长。")
-        total += end - start
+        total = timings[len(prepared)].end
         if total > MAX_OUTPUT_SECONDS + 0.000001:
             raise MediaError("MEDIA_LIMIT_EXCEEDED", "成片总时长不得超过 90 秒。")
         prepared.append((source, start, end, caption))
@@ -338,7 +352,7 @@ def render(segments: list[dict], output: Path, title: str = "") -> dict:
             temp = Path(temp_name)
             clips = []
             for index, (source, start, end, caption) in enumerate(prepared):
-                duration = end - start
+                duration = timings[index].duration
                 overlay = temp / f"overlay-{index:03}.png"
                 clip = temp / f"clip-{index:03}.mp4"
                 _overlay(overlay, width, height, caption, title if index == 0 else "")
@@ -357,12 +371,19 @@ def render(segments: list[dict], output: Path, title: str = "") -> dict:
                     audio_input = "2:a:0"
                 else:
                     audio_input = f"0:{source.audio_index}"
+                # Transition offsets use frame-aligned durations. Trim the
+                # selected source *before* padding the final fraction of a frame
+                # so rounding can never reveal content beyond the chosen end.
+                video_trim = f"trim=duration={end-start:.9f},setpts=PTS-STARTPTS," if transitioning else ""
+                video_pad = (f",tpad=stop_mode=clone:stop_duration=0.034,trim=duration={duration:.9f},"
+                             "settb=expr=1/30,setpts=PTS-STARTPTS") if transitioning else ""
+                audio_trim = f"atrim=duration={end-start:.9f},asetpts=PTS-STARTPTS," if transitioning else ""
                 filters = (
-                    f"[0:{source.video_index}]scale={width}:{height}:force_original_aspect_ratio=decrease:"
+                    f"[0:{source.video_index}]{video_trim}scale={width}:{height}:force_original_aspect_ratio=decrease:"
                     f"force_divisible_by=2,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black,"
-                    "setsar=1,fps=30,format=yuv420p[base];"
+                    f"setsar=1,fps=30,format=yuv420p{video_pad}[base];"
                     "[base][1:v:0]overlay=0:0:shortest=1,format=yuv420p[v];"
-                    f"[{audio_input}]aresample=48000,aformat=channel_layouts=stereo,apad,"
+                    f"[{audio_input}]{audio_trim}aresample=48000,aformat=channel_layouts=stereo,apad,"
                     f"atrim=duration={duration:.6f},asetpts=PTS-STARTPTS[a]"
                 )
                 args += [
@@ -376,24 +397,27 @@ def render(segments: list[dict], output: Path, title: str = "") -> dict:
                 _run("ffmpeg", args, timeout=90 + duration * 8, code="MEDIA_RENDER_FAILED")
                 clips.append(clip)
 
-            manifest = temp / "concat.txt"
-            manifest.write_text("".join(f"file '{clip.name}'\n" for clip in clips), encoding="utf-8")
             complete = temp / "complete.mp4"
-            _run(
-                "ffmpeg",
-                [
-                    "-nostdin", "-v", "error", "-xerror", "-y",
-                    "-threads", _THREADS, "-filter_threads", "1",
-                    "-protocol_whitelist", "file,pipe", "-format_whitelist", "concat,mov",
-                    "-f", "concat", "-safe", "1", "-i", str(manifest),
-                    "-map", "0:v:0", "-map", "0:a:0", "-t", f"{total:.6f}",
-                    "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-threads", _THREADS,
-                    "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k", "-ar", "48000", "-ac", "2",
-                    "-map_metadata", "-1", "-map_chapters", "-1", "-movflags", "+faststart", str(complete),
-                ],
-                timeout=90 + total * 5,
-                code="MEDIA_RENDER_FAILED",
-            )
+            if transitioning:
+                _render_transitions(clips, segments, timings, complete)
+            else:
+                manifest = temp / "concat.txt"
+                manifest.write_text("".join(f"file '{clip.name}'\n" for clip in clips), encoding="utf-8")
+                _run(
+                    "ffmpeg",
+                    [
+                        "-nostdin", "-v", "error", "-xerror", "-y",
+                        "-threads", _THREADS, "-filter_threads", "1",
+                        "-protocol_whitelist", "file,pipe", "-format_whitelist", "concat,mov",
+                        "-f", "concat", "-safe", "1", "-i", str(manifest),
+                        "-map", "0:v:0", "-map", "0:a:0", "-t", f"{total:.6f}",
+                        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-threads", _THREADS,
+                        "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k", "-ar", "48000", "-ac", "2",
+                        "-map_metadata", "-1", "-map_chapters", "-1", "-movflags", "+faststart", str(complete),
+                    ],
+                    timeout=90 + total * 5,
+                    code="MEDIA_RENDER_FAILED",
+                )
             info = probe(complete)
             if (not info["has_audio"] or (info["width"], info["height"]) != (width, height)
                     or info["duration"] > MAX_OUTPUT_SECONDS + 0.04
@@ -408,3 +432,41 @@ def render(segments: list[dict], output: Path, title: str = "") -> dict:
         raise MediaError("MEDIA_OUTPUT_EXISTS", "目标成片已存在，请创建新的版本。") from None
     except (OSError, TypeError, ValueError):
         raise MediaError("MEDIA_RENDER_FAILED", "无法保存本地成片，原始素材未改动。") from None
+
+
+def _render_transitions(clips, segments, timings, output: Path) -> None:
+    """Join only locally-normalised clips using allowlisted deterministic filters.
+
+    Hard cuts keep both complete sound spans; dissolves and fades overlap the
+    selected ends with an equal-duration audio crossfade. No model filter text
+    or source metadata is accepted as executable syntax.
+    """
+    args = ["-nostdin", "-v", "error", "-xerror", "-y", "-threads", _THREADS,
+            "-filter_complex_threads", "1", "-filter_threads", "1"]
+    filters = []
+    for index, clip in enumerate(clips):
+        args += ["-protocol_whitelist", "file,pipe", "-format_whitelist", "mov",
+                 "-enable_drefs", "0", "-use_absolute_path", "0", "-i", str(clip)]
+        length = timings[index].duration
+        filters += [f"[{index}:v:0]fps=30,trim=duration={length:.9f},settb=expr=1/30,setpts=PTS-STARTPTS[v{index}]",
+                    f"[{index}:a:0]atrim=duration={length:.9f},asetpts=PTS-STARTPTS[a{index}]"]
+    video, audio = "v0", "a0"
+    for index in range(1, len(clips)):
+        joined_video, joined_audio = f"jv{index}", f"ja{index}"
+        overlap = timings[index].overlap
+        if overlap:
+            effect = {"dissolve": "dissolve", "fade_black": "fadeblack"}[segments[index]["transition"]]
+            filters += [f"[{video}][v{index}]xfade=transition={effect}:duration={overlap:.9f}:"
+                        f"offset={timings[index].start:.9f},settb=expr=1/30[{joined_video}]",
+                        f"[{audio}][a{index}]acrossfade=d={overlap:.9f}:c1=tri:c2=tri[{joined_audio}]"]
+        else:
+            filters += [f"[{video}][v{index}]concat=n=2:v=1:a=0,settb=expr=1/30[{joined_video}]",
+                        f"[{audio}][a{index}]concat=n=2:v=0:a=1[{joined_audio}]"]
+        video, audio = joined_video, joined_audio
+    total = timings[-1].end
+    args += ["-filter_complex", ";".join(filters), "-map", f"[{video}]", "-map", f"[{audio}]",
+             "-t", f"{total:.9f}", "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+             "-threads", _THREADS, "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k",
+             "-ar", "48000", "-ac", "2", "-map_metadata", "-1", "-map_chapters", "-1",
+             "-movflags", "+faststart", str(output)]
+    _run("ffmpeg", args, timeout=90 + total * 8, code="MEDIA_RENDER_FAILED")
