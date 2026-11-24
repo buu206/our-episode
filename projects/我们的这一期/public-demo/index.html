@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="在场，把熟人聚会变成自己的一期综艺。打开交互演示，了解从创作想法到文字、音效和包装的制作流程。">
+  <meta name="theme-color" content="#f8f5ef">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>在场 · 把生活，拍成这一期</title>
+  <link rel="icon" href="assets/logo.png"><link rel="stylesheet" href="style.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <a class="skip" href="#main">跳到主要内容</a>
+  <div class="site-shell">
+    <div class="chrome" aria-hidden="true"><span class="dots"><i></i><i></i><i></i></span><span class="address">在场 / 开场</span><span>•••</span></div>
+    <header><a class="brand" href="#"><span class="logo"><img src="assets/logo.png" alt=""></span>在场</a><nav aria-label="主导航"><a href="#" aria-current="page">开场</a><a href="#experience">体验流程</a><a href="#about">怎么玩</a></nav><a class="pill dark source-link" href="https://github.com/buu206/our-episode" target="_blank" rel="noopener noreferrer">GitHub ↗</a></header>
+    <main id="main">
+      <section class="hero" aria-labelledby="hero-title">
+        <span class="confetti one" aria-hidden="true"></span><span class="confetti two" aria-hidden="true"></span><span class="confetti three" aria-hidden="true"></span>
+        <div class="eyebrow"><span></span>生活没有剧本，但可以有片头<span></span></div>
+        <h1 id="hero-title"><span class="logo hero-logo"><img src="assets/logo.png" alt=""></span>在<span class="gradient">场</span></h1>
+        <p class="theme-sticker">说好今晚不点外卖</p>
+        <p class="intro">把熟人聚会，变成自己的一期综艺。<br>你说想法，选喜欢的方向，把值得记住的片段留下来。</p>
+        <div class="cast" aria-label="五位虚构角色头像"><div class="face f1"><b>阿哲</b></div><div class="face f2"><b>小满</b></div><div class="face f3"><b>老周</b></div><div class="face f4"><b>Nana</b></div><div class="face f5"><b>豆豆</b></div></div>
+        <form id="idea-form" class="composer"><span class="ai-tag">✦ AI</span><label class="sr-only" for="idea">这一期的主题</label><input id="idea" maxlength="60" placeholder="今晚想拍什么？比如：谁先破功…" autocomplete="off"><button class="pill dark" type="submit"><span class="record"></span>体验开拍</button></form>
+        <p class="demo-note">公开交互演示 · 无需登录 · 不上传素材、不调用模型</p>
+        <a class="subtle-link" href="#experience">先逛逛制作流程 <span>↘</span></a>
+      </section>
+      <section id="experience" class="experience" aria-labelledby="experience-title">
+        <div class="section-heading"><div><p class="eyebrow small">从一句想法，到一期节目</p><h2 id="experience-title">试着当一次主创。</h2></div><span class="badge">示例流程</span></div>
+        <p class="section-note">用虚构的「朋友猜词」示例体验选择。下方是版式示意，不是实际视频或 AI 生成结果。</p>
+        <nav class="steps" aria-label="制作步骤"><button data-step="0" aria-current="step"><span>01</span>定个方向</button><button data-step="1"><span>02</span>文字与花字</button><button data-step="2"><span>03</span>声音与包装</button><button data-step="3"><span>04</span>回看方案</button></nav>
+        <div class="workbench">
+          <div class="preview-area"><div class="preview"><div class="frame-label">版式示意 · 虚构角色</div><div class="scene-title">朋友猜词局</div><img class="scene-photo" src="assets/friends.png" alt="用于版式演示的五位 AI 生成虚构朋友，非测试视频截图"><div id="flower" class="flower coral">这题，有点东西！</div><div id="subtitle" class="subtitle">“别说答案，再给我一点提示。”</div><span class="preview-corner">ZAICHANG ✳</span></div><p class="preview-caption">此图仅演示文字位置与配色；不展示实际剪辑效果。</p></div>
+          <div class="controls">
+            <section data-panel="0"><p class="step-label">01 / 先说想法</p><h3>这一期，留住什么？</h3><p id="brief">示例主题：朋友猜词，越认真越好笑。</p><div class="options"><button class="choice selected" data-direction="story" aria-pressed="true"><strong>保留一个完整故事</strong><span>出题 → 猜错 → 朋友的反应</span></button><button class="choice" data-direction="highlights" aria-pressed="false"><strong>多留一点热闹瞬间</strong><span>重点展示游戏中的互动</span></button></div><p class="quiet">真实制作中，方向需要结合上传素材决定。</p></section>
+            <section data-panel="1" hidden><p class="step-label">02 / 文字先到位</p><h3>原话说清楚，花字有性格。</h3><label for="caption">示例字幕</label><input id="caption" value="别说答案，再给我一点提示。" maxlength="36"><label for="accent">示例花字</label><input id="accent" value="这题，有点东西！" maxlength="16"><div class="swatches" aria-label="花字配色"><button data-color="coral" class="selected" aria-pressed="true">珊瑚橙</button><button data-color="teal" aria-pressed="false">蓝绿</button><button data-color="yellow" aria-pressed="false">明黄</button></div><p class="quiet">修改会立即反映在左侧示意图中。</p></section>
+            <section data-panel="2" hidden><p class="step-label">03 / 给重点一点节奏</p><h3>把声音，留给值得的瞬间。</h3><div class="toggle-row"><label for="sound">高光节点音效</label><input id="sound" type="checkbox" checked></div><p class="quiet">这里只记录选择，不播放或合成音效。</p><div class="toggle-row"><label for="border">节目边框</label><input id="border" type="checkbox"></div><label for="narration">开场旁白文案</label><input id="narration" value="这一题，你猜得出来吗？" maxlength="60"><p class="quiet">演示不进行配音。实际制作需确认文案后再合成。</p></section>
+            <section data-panel="3" hidden><p class="step-label">04 / 回看你的选择</p><h3>主意齐了，准备开拍。</h3><dl id="summary"></dl><p class="quiet">当前体验到此结束。真实上传、模型编导和视频导出需运行完整项目，尚未在这个公开页面开放。</p><button id="download" class="pill light">下载本次方案 .txt</button></section>
+            <div class="step-actions"><button id="previous" class="text-button" disabled>上一步</button><button id="next" class="pill dark">采用方向，继续 →</button></div>
+          </div>
+        </div>
+      </section>
+      <section id="about" class="about"><div class="section-heading"><div><p class="eyebrow small">你做主创，工具做执行</p><h2>把复杂留在幕后。</h2></div></div><div class="about-grid"><article><span>01</span><h3>带来真实的生活</h3><p>上传聚会片段，告诉导演这一期想留住什么。</p></article><article><span>02</span><h3>选方向，给反馈</h3><p>结合素材提出故事与包装方案，再通过预览调整。</p></article><article><span>03</span><h3>留下一期自己的节目</h3><p>视频由后端完成合成，确认后可导出。本页仅展示交互。</p></article></div><a class="subtle-link" href="https://github.com/buu206/our-episode#readme" target="_blank" rel="noopener noreferrer">查看源码与本机运行说明 ↗</a></section>
+    </main>
+    <footer><span>ZAICHANG <b>✳</b></span><p>公开演示版 · 未接入在线出片服务</p><a href="assets/OFL.txt">字体许可</a></footer>
+  </div>
+  <button id="director-toggle" class="director-orb" aria-label="打开导演功能介绍" aria-expanded="false" aria-controls="director"><span></span><span></span></button>
+  <aside id="director" hidden aria-labelledby="director-title"><div class="director-head"><div><h2 id="director-title">在场导演</h2><p>认识一下你的创作搭档</p></div><button id="director-close" class="close" aria-label="关闭导演介绍">×</button></div><p id="director-message" aria-live="polite">想先了解哪一步？这里提供固定的功能介绍，不是实时 AI 对话。</p><div class="director-chips"><button data-help="brief">先聊想法</button><button data-help="edit">这版怎么改</button><button data-help="real">如何真实出片</button></div></aside>
+  <dialog id="opening" aria-label="在场开场动画"><div class="opening-content"><p>生活没有剧本</p><strong>在<span>场</span></strong><div>这一次，你是主角。</div></div><button id="skip-opening" class="pill dark">跳过开场</button></dialog>
+  <noscript><p>请启用 JavaScript 体验交互；也可以通过 GitHub 链接查看项目说明。</p></noscript>
+</body>
+</html>
