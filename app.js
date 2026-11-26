@@ -52,6 +52,8 @@ el('#idea-form').addEventListener('submit', event => {
     state.theme = el('#idea').value.trim() || '朋友猜词，越认真越好笑。';
     showStep(0);
     location.hash = 'experience';
+    // Repeating the same hash does not scroll after the visitor returns to the hero.
+    el('#experience').scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth', block: 'start' });
     el('[data-step="0"]').focus({ preventScroll: true });
 });
 document.querySelectorAll('[data-step]').forEach(button => button.addEventListener('click', () => showStep(Number(button.dataset.step))));
