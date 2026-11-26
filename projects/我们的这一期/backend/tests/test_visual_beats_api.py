@@ -20,6 +20,7 @@ def test_api_stores_renders_and_reads_effects_without_confirming(client,headers,
     body=payload(asset['id'])
     beat=body['segments'][0]['visual_beats'][0]
     beat['kind']=kind
+    if kind=='headline':beat.update(palette='mint',scale=.7,sound='none')
     if kind=='cutout':
         beat['contour']=[{'x':.1,'y':.1},{'x':.4,'y':.3},{'x':.1,'y':.4}]
     r=client.post(BASE+f"/episodes/{episode['id']}/versions",headers=headers,json=body)

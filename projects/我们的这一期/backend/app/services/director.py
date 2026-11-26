@@ -222,6 +222,10 @@ def prepare_input(evidence: list[dict], assets: dict[str, float], background: st
         windows = source_windows(evidence)
         if windows:
             payload['source_windows'] = windows
+        from .editing_brief import build_editing_brief
+        brief = build_editing_brief(spans, windows)
+        if brief is not None:
+            payload['editing_brief'] = brief
         text = json.dumps(payload, ensure_ascii=False)
         if len(text.encode("utf-8")) > 100_000:
             raise ValueError("input limit")

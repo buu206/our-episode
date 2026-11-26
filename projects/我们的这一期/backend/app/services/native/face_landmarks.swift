@@ -23,7 +23,8 @@ for file in files {
             return ["confidence": face.confidence,
                 "box": [b.minX, 1-b.maxY, b.width, b.height],
                 "eyes": [points(face.landmarks?.leftEye), points(face.landmarks?.rightEye)],
-                "mouth": points(face.landmarks?.outerLips)]
+                "mouth": points(face.landmarks?.outerLips),
+                "contour": points(face.landmarks?.faceContour), "contour_kind": "jaw"]
         }
         output.append(["frame": file.deletingPathExtension().lastPathComponent, "faces": faces])
     }

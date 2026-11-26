@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { ArrowRight, ChevronDown, Film, Paperclip, RefreshCw, RotateCcw, X } from 'lucide-react';
 import { api, AppError, uploadAsset } from '@/lib/api';
-import type { Episode, Episodes } from '@/lib/types';
+import type { Episode, Episodes, Version } from '@/lib/types';
 import { Button, Notice, useMediaAccess } from './ui';
 
 type UploadState = 'selected' | 'uploading' | 'processing' | 'done' | 'failed' | 'unknown';
@@ -19,10 +19,17 @@ const examples = [
 const sizeLabel = (bytes: number) => bytes >= maxBytes ? `${(bytes / maxBytes).toFixed(2)} GiB` : `${(bytes / 1024 ** 2).toFixed(1)} MiB`;
 const stateLabel: Record<UploadState, string> = { selected: '等待提交', uploading: '正在传输', processing: '传输完成，正在核对视频', done: '已接收', failed: '未接收', unknown: '接收结果待核对' };
 
-function episodeLabel(ep: Episode) {
+const timestamp = (value: string) => Date.parse(value) || 0;
+const latestProductionTime = (ep: Episode) => Math.max(timestamp(ep.created_at), ...ep.versions.map(v => timestamp(v.created_at)));
+const recentEpisodes = (items: Episode[]) => [...items].reverse().sort((a, b) => latestProductionTime(b) - latestProductionTime(a));
+const latestPlayableVersion = (ep: Episode) => [...ep.versions].reverse()
+  .filter(v => ['ready', 'confirmed'].includes(v.state) && v.media_url)
+  .sort((a, b) => timestamp(b.created_at) - timestamp(a.created_at))[0];
+
+function episodeLabel(ep: Episode, version: Version | undefined) {
   if (ep.jobs.some(job => job.state === 'running' || job.state === 'queued')) return '正在制作';
-  if (ep.versions.some(version => version.state === 'confirmed')) return '已有确认成片';
-  if (ep.versions.some(version => version.state === 'ready')) return '等你预览';
+  if (version?.state === 'confirmed') return '这版已确认';
+  if (version?.state === 'ready') return '新版待预览';
   return ep.assets.length ? '继续制作' : '等待素材';
 }
 
@@ -60,7 +67,7 @@ export function Dashboard() {
     listController.current = controller;
     try {
       const data = await api<Episodes>('/episodes', { signal: controller.signal });
-      if (mounted.current && current === generation.current && !controller.signal.aborted) { setEpisodes([...data.items].reverse()); setError(''); setMediaFresh(!document.hidden); }
+      if (mounted.current && current === generation.current && !controller.signal.aborted) { setEpisodes(recentEpisodes(data.items)); setError(''); setMediaFresh(!document.hidden); }
     } catch (cause) {
       if (mounted.current && current === generation.current && !controller.signal.aborted) { setMediaFresh(false); setError(cause instanceof Error ? cause.message : '节目暂时没有取回。'); }
     }
@@ -70,7 +77,7 @@ export function Dashboard() {
     const controller = new AbortController(); listController.current = controller;
     const current = ++generation.current;
     api<Episodes>('/episodes', { signal: controller.signal })
-      .then(data => { if (mounted.current && current === generation.current && !controller.signal.aborted) { setEpisodes([...data.items].reverse()); setError(''); setMediaFresh(!document.hidden); } })
+      .then(data => { if (mounted.current && current === generation.current && !controller.signal.aborted) { setEpisodes(recentEpisodes(data.items)); setError(''); setMediaFresh(!document.hidden); } })
       .catch(cause => { if (mounted.current && current === generation.current && !controller.signal.aborted) { setMediaFresh(false); setError(cause instanceof Error ? cause.message : '节目暂时没有取回。'); } });
     const visibility = () => { setMediaFresh(false); listController.current?.abort(); if (!document.hidden) void reload(); };
     const expired = () => { mounted.current = false; writeController.current?.abort(); listController.current?.abort(); };
@@ -133,7 +140,7 @@ export function Dashboard() {
   }
   async function create(event: FormEvent) {
     event.preventDefault();
-    if (working.current || blocked || created || (!prompt.trim() && !videos.length)) return;
+    if (working.current || blocked || created) return;
     working.current = true;
     const current = ++operation.current;
     const controller = new AbortController(); writeController.current = controller;
@@ -174,7 +181,7 @@ export function Dashboard() {
         <form className="capsule-bar" onSubmit={create}>
           <span className="ai-label" aria-hidden="true">✦ AI</span>
           <input className="capsule-input" type="text" aria-label="这一期的想法" value={prompt} onChange={event => setPrompt(event.target.value)} maxLength={4000} disabled={blocked || !!created} placeholder="今晚想拍什么？比如：说好不点外卖 / 谁先破功…" />
-          {created ? <Link className="button primary capsule-shoot" href={`/episodes/${created.id}?step=materials`} onClick={event => { if (!allowLeave()) event.preventDefault(); }}>进入已创建的这一期<ArrowRight size={18} /></Link> : <Button variant="primary" className="capsule-shoot" type="submit" busy={!!busy} disabled={blocked || (!prompt.trim() && !videos.length)}><span className="record-dot" aria-hidden="true" />开拍</Button>}
+          {created ? <Link className="button primary capsule-shoot" href={`/episodes/${created.id}?step=materials`} onClick={event => { if (!allowLeave()) event.preventDefault(); }}>进入已创建的这一期<ArrowRight size={18} /></Link> : <Button variant="primary" className="capsule-shoot" type="submit" busy={!!busy} disabled={blocked}><span className="record-dot" aria-hidden="true" />开拍</Button>}
         </form>
         {!!videos.length && <ul className="selected-files" aria-label="所选视频" aria-live="polite">{videos.map(video => <li key={video.id} className={`selected-file ${video.state}`}>
           <span className="file-icon"><Film size={18} /></span><div className="file-detail"><strong>{video.name}</strong><span>{sizeLabel(video.size)} · {stateLabel[video.state]}</span>
@@ -189,7 +196,7 @@ export function Dashboard() {
         }}>已核对，允许重新提交</Button></Notice>}
         {created && videos.some(video => ['failed', 'selected'].includes(video.state)) && <Button disabled={blocked} onClick={() => void retryFailed()}>仅接收未完成的视频</Button>}
       </div>
-      <p className="premiere-hint">丢一句主题就行，素材可稍后补</p>
+      <p className="premiere-hint">写一句主题，或直接开拍后添加素材</p>
       <a className="premiere-secondary" href="#recent">逛逛往期 <ArrowRight size={15} /></a>
     </section>
     <details className="premiere-extras">
@@ -208,13 +215,14 @@ export function Dashboard() {
       {episodes === null && !error && <div className="episode-grid recent-grid" aria-label="正在加载节目" role="status">{[1, 2, 3].map(i => <div key={i} className="skeleton-card" />)}</div>}
       {episodes?.length === 0 && <div className="recent-empty"><Film size={25} /><p>第一期，从你的素材开始</p><span>写下一点想法，或者先选几段视频。</span></div>}
       <div className="episode-grid recent-grid">{(showAll ? episodes : episodes?.slice(0, 3))?.map((ep, index) => {
-        const version = [...ep.versions].reverse().find(v => ['ready', 'confirmed'].includes(v.state) && v.media_url);
-        const time = new Date(ep.created_at);
+        const version = latestPlayableVersion(ep);
+        const time = new Date(latestProductionTime(ep));
+        const episodeNumber = [...(episodes || [])].sort((a, b) => timestamp(a.created_at) - timestamp(b.created_at)).findIndex(item => item.id === ep.id) + 1;
         return <article key={ep.id} className="episode-card"><Link href={`/episodes/${ep.id}?step=${version ? 'preview&version=' + version.id : 'materials'}`} aria-label={`继续制作：${ep.title}`} onClick={event => { if (!allowLeave()) event.preventDefault(); }}>
           <div className={`episode-cover cover-${index % 3}`}>
             {version?.media_url && access.allowed && mediaFresh ? <video key={access.revision} src={version.media_url} muted playsInline preload="metadata" tabIndex={-1} aria-hidden="true" /> : <div className="cover-art" aria-hidden="true"><Film size={58} strokeWidth={1.2} /><span>在场</span></div>}
-            <span className="episode-number">EP. {String((episodes?.length || 0) - index).padStart(2, '0')}</span><span className="cover-label">{episodeLabel(ep)}</span>
-          </div><div className="episode-card-body"><h3>{ep.title}</h3><p>{ep.assets.length} 段可用素材 · {ep.versions.length} 个版本</p><div className="card-bottom"><span>{Number.isNaN(time.getTime()) ? '最近制作' : time.toLocaleDateString('zh-CN')}</span><span>继续制作<ArrowRight size={16} /></span></div></div>
+            <span className="episode-number">EP. {String(episodeNumber).padStart(2, '0')}</span><span className="cover-label">{episodeLabel(ep, version)}</span>
+          </div><div className="episode-card-body"><h3>{ep.title}</h3><p>{ep.assets.length} 段可用素材 · {ep.versions.length} 个版本</p><div className="card-bottom"><span>{time.getTime() ? time.toLocaleDateString('zh-CN') : '最近制作'}</span><span>{version ? '查看成片' : '继续制作'}<ArrowRight size={16} /></span></div></div>
         </Link></article>;
       })}</div>
       {!!episodes && episodes.length > 3 && <Button className="show-all-episodes" variant="ghost" aria-expanded={showAll} onClick={() => setShowAll(value => !value)}>{showAll ? '收起，查看最近 3 期' : `展开全部 ${episodes.length} 期`}<ChevronDown size={17} /></Button>}

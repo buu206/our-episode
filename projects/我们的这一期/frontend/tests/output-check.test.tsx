@@ -80,3 +80,12 @@ it('does not claim source review when evidence is unconfirmed',()=>{
     source_review:{scope:'source_metadata',evidence_confirmed:false,speech_checked:0,captions_checked:0,issue_count:0,issues:[]}});
   expect(screen.queryByText('原话边界与字幕时长已核对')).not.toBeInTheDocument();
 });
+
+it('opens visual playback hints as local video replay rather than audio faults',()=>{
+  mount({scope:'local_technical',version_id:vid,decoded_full_output:true,status:'needs_attention',issues_omitted:2,
+    issues:[{code:'STILL_INTERVAL',start:2.4,end:5.6,message:'这里画面较长时间几乎没动，也可能是定格或静态片头，建议回看。'}]});
+  expect(screen.getByText('播放检查 · 3处待看')).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button',{name:'回看 2—6秒'}));
+  expect(screen.getByRole('dialog',{name:'回看这一处'})).toBeInTheDocument();
+  expect(screen.queryByText('审片通过')).not.toBeInTheDocument();
+});

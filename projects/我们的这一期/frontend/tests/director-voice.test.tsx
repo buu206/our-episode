@@ -122,7 +122,8 @@ describe("director voice input", () => {
     await screen.findByText("文字已放到输入框，可修改后发送");
     expect(mocks.upload).toHaveBeenCalledWith(eid, expect.any(File), expect.objectContaining({ confirm_send: true, accept_unknown_retention: true }), expect.any(Function), expect.any(AbortSignal));
     expect(onTranscript).toHaveBeenCalledExactlyOnceWith(ready.text);
-    expect(onBusyChange).toHaveBeenLastCalledWith(false);
+    // Parent notification runs in an effect after the ready text is committed.
+    await waitFor(() => expect(onBusyChange).toHaveBeenLastCalledWith(false));
     expect(mocks.api.mock.calls.some(([path]) => path.endsWith("/chat"))).toBe(false);
   });
 

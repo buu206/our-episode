@@ -1,0 +1,15 @@
+.flow { margin:0 0 22px; padding:18px; border-radius:22px; background:linear-gradient(110deg,#fff0e9,#fff8df); }
+.heading { display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:14px; }
+.heading strong { color:#594435; font-size:15px; }
+.heading > span { color:#8b7164; font-size:12px; }
+.steps { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; }
+.steps button { display:flex; align-items:center; justify-content:center; gap:8px; border:0; border-radius:14px; padding:12px 8px; background:#ffffffa8; color:#795f50; cursor:pointer; font:inherit; font-size:14px; }
+.steps button[aria-current] { background:#29221e; color:#fff8ef; box-shadow:0 5px 16px #644a3320; }
+.steps button > span { font-size:11px; opacity:.7; }
+.flow button:focus-visible { outline:3px solid #d45d7e; outline-offset:3px; }
+.flow button:disabled { opacity:.5; cursor:wait; }
+.choice { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:12px; color:#725a4b; font-size:14px; line-height:1.65; }
+.choice p { margin:0; }
+.choice button { flex-shrink:0; border:0; border-radius:20px; background:#fff; color:#9a4561; padding:10px 16px; cursor:pointer; font:inherit; }
+.choice > span { flex-shrink:0; font-size:12px; }
+@media(max-width:600px) { .flow { padding:14px; } .steps { gap:6px; } .steps button { font-size:12px; flex-direction:column; gap:4px; } .choice { align-items:flex-start; flex-direction:column; } }

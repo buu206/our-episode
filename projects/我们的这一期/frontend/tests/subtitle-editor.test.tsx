@@ -30,3 +30,38 @@ it('hides only the selected caption and replays from its source interval',async(
  fireEvent.click(screen.getByLabelText('不显示这一句（原声保留）'));fireEvent.click(screen.getByText('保存并生成新版'));
  await waitFor(()=>expect(save).toHaveBeenCalled());expect(save.mock.calls[0][0][0].subtitle_edits[0].hidden).toBe(true);
 });
+
+const row={cue_id:cue,segment_index:0,asset_id:aid,start:.5,end:1.5,text:'喝了',original_text:'喝了',source_text:'喝了',hidden:false,reviewed:false,locked:false,flags:[],media_url:`/api/v1/assets/${aid}/media`};
+const target={version_id:vid,cue_id:cue,caption:'喝了',recognized:'不喝了'};
+function targeted(rows=[{...row,cue_id:'first',text:'第一句'},row],selected=target){
+ api.mockResolvedValue({version_id:vid,rows});
+ const save=vi.fn().mockResolvedValue(true),close=vi.fn();
+ render(<MediaAccessContext.Provider value={{allowed:true,revision:0}}><SubtitleEditor version={version} assets={[asset]} busy={false} target={selected} onClose={close} onSave={save}/></MediaAccessContext.Provider>);
+ return {save,close};
+}
+it('opens the reported cue, requires an explicit draft choice, and saves a separate candidate',async()=>{
+ const {save,close}=targeted();const input=await screen.findByLabelText('屏幕上显示的字幕');
+ expect(screen.getByLabelText('选择字幕')).toHaveValue('1');expect(input).toHaveValue('喝了');
+ expect(save).not.toHaveBeenCalled();expect(screen.getByText('保存并生成新版')).toBeDisabled();
+ fireEvent.click(screen.getByRole('button',{name:'用作修改草稿'}));expect(input).toHaveValue('不喝了');expect(save).not.toHaveBeenCalled();
+ fireEvent.click(screen.getByText('保存并生成新版'));
+ await waitFor(()=>expect(close).toHaveBeenCalledOnce());
+ expect(save).toHaveBeenCalledWith([{...version.segments[0],subtitle_edits:[{cue_id:cue,text:'不喝了',hidden:false,reviewed:true}]}]);
+ expect(version.segments[0].subtitle_edits).toBeUndefined();
+});
+it.each(['missing','duplicate','changed','foreign','hidden'])('does not apply stale or ambiguous targets: %s',async mode=>{
+ const rows=mode==='missing'?[{...row,cue_id:'different'}]:mode==='duplicate'?[row,{...row,segment_index:1}]:[{...row,...(mode==='changed'?{text:'新版本文字'}:mode==='hidden'?{hidden:true}:{})}];
+ const {save}=targeted(rows,mode==='foreign'?{...target,version_id:'other'}:target);
+ expect(await screen.findByText(/无法唯一对应当前字幕/)).toBeInTheDocument();
+ expect(screen.queryByText('用作修改草稿')).not.toBeInTheDocument();expect(save).not.toHaveBeenCalled();
+});
+it('does not offer a replacement for missing speech and keeps protected interview text locked',async()=>{
+ targeted([{...row,locked:true}]);await screen.findByLabelText('屏幕上显示的字幕');
+ expect(screen.getByText('用作修改草稿')).toBeDisabled();expect(screen.getByLabelText('屏幕上显示的字幕')).toBeDisabled();
+ cleanup();targeted([row],{...target,recognized:''});await screen.findByLabelText('屏幕上显示的字幕');
+ expect(screen.queryByText('用作修改草稿')).not.toBeInTheDocument();expect(screen.getByLabelText('屏幕上显示的字幕')).toHaveValue('喝了');
+});
+it('closes an untouched suggestion without creating a new candidate',async()=>{
+ const {save,close}=targeted();await screen.findByLabelText('屏幕上显示的字幕');
+ fireEvent.click(screen.getByRole('button',{name:'关闭弹窗'}));expect(close).toHaveBeenCalledOnce();expect(save).not.toHaveBeenCalled();
+});

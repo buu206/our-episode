@@ -21,7 +21,7 @@ from .schemas import (AssetOut, AuthOut, EpisodeIn, EpisodeOut, EpisodesOut, Imp
                       JobOut, Login, Ok, StatusOut, VersionIn, VersionOut,
                       EvidenceReview, DirectionSelect, NarrationConfirm, RetentionOut, Segment,
                       DirectorMessageIn, DirectorState, DirectorChatIn, DirectorChatState, DirectorActionIn, DirectorActionOut,
-                      SubtitleTrackOut)
+                      SubtitleTrackOut, SequenceReviewIn)
 from .services import media
 from .services.cleanup import cleanup_deleted_files
 from .services.cleanup_status import pending_cleanup, asset_cleanup_pending
@@ -234,8 +234,28 @@ def create_app(settings=None, *, services=None):
         return AuthOut(user_id=owner, csrf_token=csrf)
 
     @app.get('/api/v1/auth/me', response_model=AuthOut)
-    def me(auth=Depends(session)):
-        return AuthOut(user_id=auth['user_id'], csrf_token=auth['csrf_token'])
+    def me(request: Request, response: Response, repo=Depends(repository)):
+        try:
+            auth = session(request, repo)
+            return AuthOut(user_id=auth['user_id'], csrf_token=auth['csrf_token'])
+        except DomainError as exc:
+            if exc.code != 'AUTH_REQUIRED':
+                raise
+            # Opt-in local launcher only. Other APIs retain owner + CSRF checks.
+            if not (settings.local_demo_entry
+                    and request.client and request.client.host in ('127.0.0.1', '::1')
+                    and request.headers.get('x-local-demo-entry') == '1'
+                    and request.headers.get('sec-fetch-site', 'same-origin') in ('same-origin', 'none')
+                    and request.headers.get('origin', str(request.base_url).rstrip('/')) == str(request.base_url).rstrip('/')):
+                raise
+        token, csrf = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
+        with repo.transaction() as db:
+            db.add(Session(token_hash=digest(token), owner_id='local-owner', csrf=csrf,
+                           expires=time.time() + settings.session_seconds))
+            repo.audit(db, 'local-owner', 'local_demo_entry', 'session')
+        response.set_cookie(cookie_name, token, max_age=settings.session_seconds,
+                            httponly=True, samesite='strict', path='/')
+        return AuthOut(user_id='local-owner', csrf_token=csrf)
 
     @app.post('/api/v1/auth/logout', response_model=Ok)
     def logout(response: Response, auth=Depends(session), repo=Depends(repository)):
@@ -368,79 +388,86 @@ def create_app(settings=None, *, services=None):
                 raise DomainError('MEDIA_MISSING', '应用副本丢失，请重新上传。', 404)
             return FileResponse(path, media_type='video/mp4')
 
+    def create_version_record(db, repo, episode_id, body, owner, *, reuse_finishing_voice=False):
+        episode = repo.owned(db, Episode, episode_id, owner)
+        base = None
+        if body.base_version_id:
+            base = repo.owned(db, Version, body.base_version_id, owner)
+            if base.episode_id != episode_id:
+                raise DomainError('INVALID_BASE', '原版本不属于本期。')
+        if sum(s.end - s.start for s in body.segments) > 90:
+            raise DomainError('OUTPUT_TOO_LONG', '导出总时长不能超过 90 秒。')
+        stored_segments = [s.model_dump(exclude_defaults=True) for s in body.segments]
+        # Caption is historically required in the public response and on disk.
+        for segment, source in zip(stored_segments, body.segments):
+            segment['caption'] = source.caption
+        guarded = bool(base and is_director_edit(db, base)) or any(s.evidence_ids or s.purpose or s.editorial for s in body.segments)
+        if guarded:
+            check_edit(stored_segments, episode)
+        protected_segments = []
+        for s in body.segments:
+            asset = active_asset(db, repo, s.asset_id, owner)
+            if asset.episode_id != episode_id or s.end > asset.duration + .001:
+                raise DomainError('INVALID_SEGMENT', '片段超出本期素材范围。')
+            guard_asset(db, asset, s.model_dump())
+            if s.frame_accents and asset_details(db, asset)['fixed_segment'] is not None:
+                raise DomainError('INVALID_FRAME_ACCENT', '采访表达保持原样，不能添加边框强调。', 422)
+            if s.visual_beats and asset_details(db, asset)['fixed_segment'] is not None:
+                raise DomainError('INVALID_VISUAL_BEAT', '采访表达保持原样，不能添加人物或物件视觉强调。', 422)
+            if s.editorial and s.editorial.treatment != 'none' and asset_details(db, asset)['fixed_segment'] is not None:
+                raise DomainError('INVALID_EDITORIAL', '采访表达保持原样，不添加编导包装。', 422)
+            protected_segments.append({**s.model_dump(), '_preserve_expression': asset_details(db, asset)['fixed_segment'] is not None})
+        try:
+            validate_transitions(protected_segments)
+            if any(s.transition != 'cut' for s in body.segments):
+                validate_speech_boundaries(stored_segments, episode.evidence)
+            if any(s.get('subtitle_edits') for s in stored_segments):
+                if body.packaging != 'variety_v2':
+                    raise DomainError('SUBTITLE_STYLE_REQUIRED','字幕校对需保留综艺节奏包装。',422)
+                from .services.dialogue_captions import attach_dialogue, apply_subtitle_edits
+                attach_dialogue(db,episode,protected_segments)
+                apply_subtitle_edits(protected_segments)
+        except ValueError as exc:
+            raise DomainError('INVALID_TRANSITION', str(exc), 422) from None
+        version = Version(owner_id=owner, episode_id=episode_id, title=body.title,
+                          segments=stored_segments, base_version_id=body.base_version_id,
+                          origin=base.origin if base and base.origin in ('ai', 'demo') else 'manual',
+                          evidence_revision=episode.evidence_revision if guarded else base.evidence_revision if base else None,
+                          direction_id=base.direction_id if base else None,
+                          narration_text=body.narration_text if body.packaging in ('standard', 'variety', 'variety_v2') else '',
+                          packaging=body.packaging)
+        if base and base.state == 'restricted' and (base.error or {}).get('code') != 'COLLAB_RESTRICTED':
+            raise DomainError('VERSION_UNAVAILABLE', '旧版本证据已失效，请从当前素材重新建立版本。', 409)
+        # A packaging/title-only revision can reuse an already approved voice.
+        # Ordinary edits cannot carry approval across text, spans or caption changes.
+        # Finishing has separately locked source spans and explicitly retained text.
+        if (base and base.state in ('ready', 'confirmed') and not base.error
+                and base.narration_approved and base.narration_path
+                and version.narration_text and version.narration_text == base.narration_text
+                and (reuse_finishing_voice or [{k:v for k,v in Segment.model_validate(s).model_dump().items() if k!='subtitle_edits'} for s in version.segments]
+                    == [{k:v for k,v in Segment.model_validate(s).model_dump().items() if k!='subtitle_edits'} for s in base.segments])):
+            source_segments(repo, db, base)
+            from .services.packaging import reusable_narration
+            try:
+                reusable_narration(repo.data_dir, base.narration_path)
+            except media.MediaError as exc:
+                raise DomainError(exc.code, exc.message, 409) from None
+            version.narration_path = base.narration_path
+            version.narration_approved = True
+        db.add(version)
+        db.flush()
+        if guarded:
+            mark_edit(repo, db, version)
+        repo.audit(db, owner, 'version_created', version.id)
+        if version.narration_path:
+            repo.audit(db, owner, 'narration_reused', version.id, base_version_id=base.id)
+        return version
+
+
     @app.post('/api/v1/episodes/{episode_id}/versions', response_model=VersionOut, status_code=201)
     def create_version(episode_id: str, body: VersionIn, auth=Depends(session), repo=Depends(repository)):
         with repo.transaction() as db:
-            episode = repo.owned(db, Episode, episode_id, auth['user_id'])
-            base = None
-            if body.base_version_id:
-                base = repo.owned(db, Version, body.base_version_id, auth['user_id'])
-                if base.episode_id != episode_id:
-                    raise DomainError('INVALID_BASE', '原版本不属于本期。')
-            if sum(s.end - s.start for s in body.segments) > 90:
-                raise DomainError('OUTPUT_TOO_LONG', '导出总时长不能超过 90 秒。')
-            stored_segments = [s.model_dump(exclude_defaults=True) for s in body.segments]
-            # Caption is historically required in the public response and on disk.
-            for segment, source in zip(stored_segments, body.segments):
-                segment['caption'] = source.caption
-            guarded = bool(base and is_director_edit(db, base)) or any(s.evidence_ids or s.purpose or s.editorial for s in body.segments)
-            if guarded:
-                check_edit(stored_segments, episode)
-            protected_segments = []
-            for s in body.segments:
-                asset = active_asset(db, repo, s.asset_id, auth['user_id'])
-                if asset.episode_id != episode_id or s.end > asset.duration + .001:
-                    raise DomainError('INVALID_SEGMENT', '片段超出本期素材范围。')
-                guard_asset(db, asset, s.model_dump())
-                if s.visual_beats and asset_details(db, asset)['fixed_segment'] is not None:
-                    raise DomainError('INVALID_VISUAL_BEAT', '采访表达保持原样，不能添加人物或物件视觉强调。', 422)
-                if s.editorial and s.editorial.treatment != 'none' and asset_details(db, asset)['fixed_segment'] is not None:
-                    raise DomainError('INVALID_EDITORIAL', '采访表达保持原样，不添加编导包装。', 422)
-                protected_segments.append({**s.model_dump(), '_preserve_expression': asset_details(db, asset)['fixed_segment'] is not None})
-            try:
-                validate_transitions(protected_segments)
-                if any(s.transition != 'cut' for s in body.segments):
-                    validate_speech_boundaries(stored_segments, episode.evidence)
-                if any(s.get('subtitle_edits') for s in stored_segments):
-                    if body.packaging != 'variety_v2':
-                        raise DomainError('SUBTITLE_STYLE_REQUIRED','字幕校对需保留综艺节奏包装。',422)
-                    from .services.dialogue_captions import attach_dialogue, apply_subtitle_edits
-                    attach_dialogue(db,episode,protected_segments)
-                    apply_subtitle_edits(protected_segments)
-            except ValueError as exc:
-                raise DomainError('INVALID_TRANSITION', str(exc), 422) from None
-            version = Version(owner_id=auth['user_id'], episode_id=episode_id, title=body.title,
-                              segments=stored_segments, base_version_id=body.base_version_id,
-                              origin=base.origin if base and base.origin in ('ai', 'demo') else 'manual',
-                              evidence_revision=episode.evidence_revision if guarded else base.evidence_revision if base else None,
-                              direction_id=base.direction_id if base else None,
-                              narration_text=body.narration_text if body.packaging in ('standard', 'variety', 'variety_v2') else '',
-                              packaging=body.packaging)
-            if base and base.state == 'restricted' and (base.error or {}).get('code') != 'COLLAB_RESTRICTED':
-                raise DomainError('VERSION_UNAVAILABLE', '旧版本证据已失效，请从当前素材重新建立版本。', 409)
-            # A packaging/title-only revision can reuse an already approved voice.
-            # Never carry approval across a text, source span or caption change.
-            if (base and base.state in ('ready', 'confirmed') and not base.error
-                    and base.narration_approved and base.narration_path
-                    and version.narration_text and version.narration_text == base.narration_text
-                    and [{k:v for k,v in Segment.model_validate(s).model_dump().items() if k!='subtitle_edits'} for s in version.segments]
-                        == [{k:v for k,v in Segment.model_validate(s).model_dump().items() if k!='subtitle_edits'} for s in base.segments]):
-                source_segments(repo, db, base)
-                from .services.packaging import reusable_narration
-                try:
-                    reusable_narration(repo.data_dir, base.narration_path)
-                except media.MediaError as exc:
-                    raise DomainError(exc.code, exc.message, 409) from None
-                version.narration_path = base.narration_path
-                version.narration_approved = True
-            db.add(version)
-            db.flush()
-            if guarded:
-                mark_edit(repo, db, version)
-            repo.audit(db, auth['user_id'], 'version_created', version.id)
-            if version.narration_path:
-                repo.audit(db, auth['user_id'], 'narration_reused', version.id, base_version_id=base.id)
-            return version_out(version)
+            return version_out(create_version_record(db, repo, episode_id, body, auth['user_id']))
 
     @app.post('/api/v1/versions/{version_id}/review', response_model=JobOut)
     def review_output(version_id: str, auth=Depends(session), repo=Depends(repository)):
@@ -452,6 +479,20 @@ def create_app(settings=None, *, services=None):
     @app.post('/api/v1/versions/{version_id}/visual-review', response_model=JobOut)
     def review_visual_output(version_id: str, auth=Depends(session), repo=Depends(repository)):
         from .services.visual_review import enqueue
+        with repo.transaction() as db:
+            version = repo.owned(db, Version, version_id, auth['user_id'])
+            return job_out(enqueue(repo, db, version, model_services))
+
+    @app.post('/api/v1/versions/{version_id}/sequence-review', response_model=JobOut)
+    def review_sequence_output(version_id: str, body: SequenceReviewIn, auth=Depends(session), repo=Depends(repository)):
+        from .services.sequence_review import enqueue
+        with repo.transaction() as db:
+            version = repo.owned(db, Version, version_id, auth['user_id'])
+            return job_out(enqueue(repo, db, version, model_services, body.model_dump()))
+
+    @app.post('/api/v1/versions/{version_id}/audio-review', response_model=JobOut)
+    def review_audio_output(version_id: str, auth=Depends(session), repo=Depends(repository)):
+        from .services.audio_review import enqueue
         with repo.transaction() as db:
             version = repo.owned(db, Version, version_id, auth['user_id'])
             return job_out(enqueue(repo, db, version, model_services))
@@ -777,7 +818,8 @@ def create_app(settings=None, *, services=None):
             if auto_key:
                 existing = db.scalars(select(Job).where(Job.owner_id == auth['user_id'], Job.idempotency_key == auto_key)).first()
                 if existing:
-                    if existing.payload.get('delegation') != body.model_dump():
+                    saved_delegation=existing.payload.get('delegation',{})
+                    if {**saved_delegation,'keep_cut_version_id':saved_delegation.get('keep_cut_version_id')} != body.model_dump():
                         raise DomainError('REQUEST_CONFLICT', '这个请求已用于另一种拍法，请刷新后重试。', 409)
                     saved = repo.owned(db, Version, existing.version_id, auth['user_id'])
                     source_segments(repo, db, saved)
@@ -789,10 +831,22 @@ def create_app(settings=None, *, services=None):
                 if not any(row['asset_id'] == span['asset_id'] and row['start'] <= span['start'] < span['end'] <= row['end'] for row in available_sources):
                     raise DomainError('INVALID_PLAN', '方向包含未经核对的区间。', 409)
             segments, narration = build_edit_plan(direction, assets, body.packaging)
+            if body.keep_cut_version_id:
+                base=repo.owned(db,Version,body.keep_cut_version_id,auth['user_id'])
+                if base.episode_id!=episode_id or base.state not in ('ready','confirmed'):
+                    raise DomainError('INVALID_BASE','请选择本期可播放版本锁定剪点。',409)
+                source_segments(repo,db,base)
+                if base.narration_text or any(s.get('subtitle_edits') for s in base.segments):
+                    raise DomainError('LOCKED_EDIT_UNSUPPORTED','带已校对字幕或旁白的版本暂不自动分段改包装，请保留原版。',409)
+                from .services.editorial_plan import retain_cut
+                try:segments=retain_cut(segments,base.segments)
+                except ValueError as exc:raise DomainError('LOCKED_CUT_MISMATCH',str(exc),409) from None
+                narration=''
             guarded = any(s.get('evidence_ids') or s.get('purpose') for s in segments)
             if guarded:
                 check_edit(segments, episode)
             version = Version(owner_id=auth['user_id'], episode_id=episode.id, title=direction['title'],
+                base_version_id=body.keep_cut_version_id,
                 origin='ai' if model_services.is_real else 'demo', segments=segments, direction_id=direction['id'], evidence_revision=body.revision,
                 narration_text='' if body.auto_render_original else narration, packaging=body.packaging)
             db.add(version)
@@ -812,6 +866,7 @@ def create_app(settings=None, *, services=None):
                 create_run(repo, db, version, job, requested_brief)
                 repo.audit(db, auth['user_id'], 'director_original_draft_queued', job.id)
             repo.audit(db, auth['user_id'], 'direction_selected', version.id, revision=body.revision)
+            if body.keep_cut_version_id:repo.audit(db,auth['user_id'],'director_packaging_cut_locked',version.id,base_version_id=body.keep_cut_version_id)
             return version_out(version)
 
     @app.post('/api/v1/versions/{version_id}/narration', response_model=JobOut)
@@ -882,6 +937,8 @@ def create_app(settings=None, *, services=None):
             repo.audit(db, auth['user_id'], 'job_retry_requested', job.id)
             return job_out(job)
 
+    from .finishing_api import register_finishing
+    register_finishing(app, session, repository, create_version_record, version_out)
     register_collaboration(app, session, repository, settings, cookie_name)
     register_sharing(app, session, repository, settings, cookie_name)
     register_director_voice(app, session, repository, model_services)

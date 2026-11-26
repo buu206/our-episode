@@ -20,6 +20,9 @@ INK = '#262142'
 PINK = '#ff5292'
 YELLOW = '#ffe55b'
 FONT = Path(__file__).resolve().parents[1] / 'assets/fonts/ZCOOLKuaiLe-Regular.ttf'
+PALETTES = {'candy':(YELLOW,'#ff90b5',YELLOW,'#82e8e6'),
+            'amber':('#ff9500','#f14a16'), 'mint':('#00ab80','#007db6'),
+            'coral':('#f52570','#c92f91')}
 
 
 @lru_cache(maxsize=32)
@@ -27,7 +30,7 @@ def font(size):
     return ImageFont.truetype(str(FONT), size=max(8, size))
 
 
-def letter(char: str, size: int, color: str) -> Image.Image:
+def letter(char: str, size: int, color: str, *, vivid: bool = False) -> Image.Image:
     """Fat letter + deep extrusion + colour outer edge + white inner edge."""
     f = font(size)
     box = f.getbbox(char)
@@ -38,16 +41,16 @@ def letter(char: str, size: int, color: str) -> Image.Image:
     def grown(radius):
         return mask.filter(ImageFilter.MaxFilter(2*max(1, round(radius))+1))
     out = Image.new('RGBA', mask.size)
-    edge = grown(size*.105)
+    edge = grown(size*(.12 if vivid else .105))
     shadow = Image.new('RGBA', mask.size, INK); shadow.putalpha(edge)
     out.alpha_composite(shadow, (round(size*.04), round(size*.065)))
-    for alpha, c in ((edge,INK),(grown(size*.075),color),(grown(size*.035),'#fffaf1')):
+    for alpha, c in ((edge,INK),(grown(size*.075),color),(grown(size*(.025 if vivid else .035)),'#fffaf1')):
         p = Image.new('RGBA', mask.size,c); p.putalpha(alpha); out.alpha_composite(p)
     fill = Image.new('RGBA',mask.size,color)
     # Subtle light at the top; keep the letter itself saturated and readable.
     overlay = Image.new('RGBA',mask.size); d=ImageDraw.Draw(overlay)
     for y in range(mask.height):
-        d.line((0,y,mask.width,y),fill=(255,255,255,round(90*max(0,1-y/mask.height))))
+        d.line((0,y,mask.width,y),fill=(255,255,255,round((24 if vivid else 90)*max(0,1-y/mask.height))))
     fill=Image.alpha_composite(fill,overlay); fill.putalpha(mask); out.alpha_composite(fill)
     return out
 
@@ -93,22 +96,22 @@ def _paste(canvas, image, x, y, scale=1, angle=0, alpha=1):
     canvas.alpha_composite(p,(round(x-p.width/2),round(y-p.height/2)))
 
 
-def render_frames(beat: VisualBeat, source: Path, folder: Path, width: int, height: int) -> Path:
+def render_frames(beat: VisualBeat, source: Path, folder: Path, width: int, height: int, *, safe_bottom=None) -> Path:
     """Bounded 30 fps sequence. Contents survive only in the render temp directory."""
     folder.mkdir(exist_ok=False)
-    unit=min(width,height)/720
+    unit=min(width,height)/720*beat.scale
     subject=None
     if beat.kind=='cutout':
         data=media._run('ffmpeg',['-v','error','-nostdin','-protocol_whitelist','file,pipe',
             '-ss',str(beat.source_time),'-i',str(source),'-frames:v','1','-vf','scale=720:1280:force_original_aspect_ratio=decrease',
             '-f','image2pipe','-vcodec','png','-'],timeout=30,code='MEDIA_RENDER_FAILED')
         with Image.open(io.BytesIO(data)) as raw:
-            subject=sticker(cutout(raw,beat),round(min(height*.35,width*.65)))
+            subject=sticker(cutout(raw,beat),round(min(height*.35,width*.65)*beat.scale))
     chars=list(beat.text)
     size=round(min(106*unit,width*.75/max(1,len(chars))))
     if subject:size=round(min(78*unit,width*.5/max(1,len(chars))))
-    colors=(YELLOW,'#ff90b5',YELLOW,'#82e8e6')
-    letters=[letter(c,size,colors[i%len(colors)]) for i,c in enumerate(chars)]
+    colors=PALETTES[beat.palette]
+    letters=[letter(c,size,colors[i%len(colors)],vivid=beat.palette!='candy') for i,c in enumerate(chars)]
     left=beat.position.endswith('left')
     top=beat.position.startswith('top')
     cx=width*(.30 if left else .70) if subject else width*(beat.target.x+beat.target.width/2)
@@ -152,5 +155,16 @@ def render_frames(beat: VisualBeat, source: Path, folder: Path, width: int, heig
             x=cx+(i-(len(chars)-1)/2)*advance
             y=label_y+((-1)**i)*size*.07
             _paste(layer,p,x,y,k,(-1)**i*7+math.sin(t*5+i)*1.5,opacity)
+        if safe_bottom is not None:
+            # Fit the whole animated overlay, including overshoot/rays/label,
+            # above actual wrapped subtitle bounds; never cover text with a sticker.
+            bbox=layer.getchannel('A').getbbox()
+            if bbox and bbox[3]>safe_bottom:
+                patch=layer.crop(bbox)
+                if patch.height>safe_bottom-8:
+                    ratio=max(1,safe_bottom-8)/patch.height
+                    patch=patch.resize((max(1,round(patch.width*ratio)),max(1,round(patch.height*ratio))),Image.Resampling.LANCZOS)
+                layer=Image.new('RGBA',(width,height))
+                layer.alpha_composite(patch,(max(0,min(width-patch.width,bbox[0])),max(0,round(safe_bottom-patch.height))))
         layer.save(folder/f'{n:04d}.png')
     return folder/'%04d.png'

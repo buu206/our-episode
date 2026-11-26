@@ -20,7 +20,7 @@ function origin(value: string | undefined): URL | null {
   if (!value) return null;
   try {
     const url = new URL(value);
-    if (url.protocol !== "http:" || url.username || url.password || url.pathname !== "/" || url.search || url.hash) return null;
+    if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.pathname !== "/" || url.search || url.hash) return null;
     return url;
   } catch { return null; }
 }
@@ -50,10 +50,10 @@ export async function proxyRequest(request: Request, path: readonly string[], op
   const backend = origin(options.backendUrl ?? process.env.BACKEND_URL);
   const frontend = origin(options.appOrigin ?? process.env.APP_ORIGIN);
   const configuredMode = options.backendMode ?? process.env.BACKEND_MODE;
-  if (!backend || !loopback(backend.hostname) || !backend.port
+  if (!backend || backend.protocol !== "http:" || !loopback(backend.hostname) || !backend.port
       || (configuredMode !== undefined && configuredMode !== "normal" && configuredMode !== "demo")
-      || !frontend || !trustedFrontend(frontend.hostname) || !frontend.port) {
-    return failure(503, "PROXY_NOT_CONFIGURED", "本机网页服务尚未正确配置，请检查启动设置。");
+      || !frontend || !(frontend.protocol === "https:" || (trustedFrontend(frontend.hostname) && frontend.port))) {
+    return failure(503, "PROXY_NOT_CONFIGURED", "网页服务尚未正确配置，请检查启动设置。");
   }
   let incoming: URL;
   try { incoming = new URL(request.url); } catch { return failure(400, "INVALID_REQUEST", "请求地址无效。"); }
@@ -61,14 +61,14 @@ export async function proxyRequest(request: Request, path: readonly string[], op
   // be localhost even when the browser used 127.0.0.1. Validate the actual Host
   // header and browser Origin against configuration, never forwarded headers.
   if (request.headers.get("host") !== frontend.host) {
-    return failure(400, "INVALID_HOST", "请求地址与本机网页入口不匹配。");
+    return failure(400, "INVALID_HOST", "请求地址与网页入口不匹配。");
   }
   const write = !["GET", "HEAD"].includes(request.method);
   const fetchSite = request.headers.get("sec-fetch-site");
   const receivedOrigin = request.headers.get("origin");
   if ((receivedOrigin && receivedOrigin !== frontend.origin) || (write && receivedOrigin !== frontend.origin)
       || (fetchSite && fetchSite !== "same-origin" && !(fetchSite === "none" && !write))) {
-    return failure(403, "INVALID_ORIGIN", "请求来源不匹配，请从本机网页重新操作。");
+    return failure(403, "INVALID_ORIGIN", "请求来源不匹配，请从配置的网页入口重新操作。");
   }
   if (path.length === 0 || path.some((part) => !/^[a-z0-9_-]+$/.test(part))) {
     return failure(400, "INVALID_API_PATH", "接口地址无效。");
@@ -80,7 +80,9 @@ export async function proxyRequest(request: Request, path: readonly string[], op
   const baseCookie = (configuredMode ?? (backend.port === "8790" ? "demo" : "normal")) === "demo" ? "episode_demo_session" : "episode_session";
   const cookieName = baseCookie + (contract.role === "owner" ? "" : `_${contract.role}`);
   const cookie = applicationCookie(request, cookieName);
-  if (!contract.public && !cookie) return failure(401, contract.role === "owner" ? "AUTH_REQUIRED" : `${contract.role.toUpperCase()}_AUTH_REQUIRED`, "请使用当前身份的邀请重新登录。");
+  const localEntry = process.env.LOCAL_DEMO_ENTRY === "1" && configuredMode === "normal"
+    && frontend.protocol === "http:" && loopback(frontend.hostname) && relative === "/auth/me" && request.method === "GET";
+  if (!contract.public && !cookie && !localEntry) return failure(401, contract.role === "owner" ? "AUTH_REQUIRED" : `${contract.role.toUpperCase()}_AUTH_REQUIRED`, "请使用当前身份的邀请重新登录。");
   const csrf = request.headers.get("x-csrf-token");
   if (write && !contract.public && (!csrf || !safeToken.test(csrf))) return failure(403, "CSRF_FAILED", "会话校验失败，请刷新后重试。");
   const length = request.headers.get("content-length");
@@ -100,6 +102,7 @@ export async function proxyRequest(request: Request, path: readonly string[], op
     if (value !== null && !blockedRequestHeaders.has(name)) headers.set(name, value);
   }
   if (cookie) headers.set("cookie", cookie);
+  if (localEntry) headers.set("x-local-demo-entry", "1");
   if (write && csrf) headers.set("x-csrf-token", csrf);
   if (write) headers.set("origin", backend.origin);
   const abort = new AbortController();
@@ -173,7 +176,11 @@ export async function proxyRequest(request: Request, path: readonly string[], op
       if (value !== null && !blockedResponseHeaders.has(name)) outputHeaders.set(name, value);
     }
     if (!blockedResponseHeaders.has("set-cookie")) for (const setCookie of cookiesFrom(upstream.headers)) {
-      if (setCookie.slice(0, setCookie.indexOf("=")) === cookieName) outputHeaders.append("set-cookie", setCookie);
+      if (setCookie.slice(0, setCookie.indexOf("=")) === cookieName) {
+        const secureCookie = frontend.protocol === "https:" && !/;\s*secure\s*(;|$)/i.test(setCookie)
+          ? `${setCookie}; Secure` : setCookie;
+        outputHeaders.append("set-cookie", secureCookie);
+      }
     }
     if (request.method === "HEAD" || upstream.status === 204 || upstream.status === 304 || !upstream.body) {
       await upstream.body?.cancel(); clean();

@@ -10,7 +10,7 @@ from ..models import Asset, Episode, Job, Version
 from ..repository import DomainError
 from . import media
 
-REVISION = 'technical-review-v3'
+REVISION = 'technical-review-v4'
 
 
 def fingerprint(path):
@@ -62,6 +62,7 @@ def enqueue(repo, db, version):
 
 
 def inspect_output(path, *, expect_audio):
+    from .playback_review import inspect_frames, inspect_audio_span
     before = fingerprint(path)
     info = media.probe(path)
     duration = info['duration']
@@ -72,6 +73,8 @@ def inspect_output(path, *, expect_audio):
         '-i', str(path), '-map', '0:v:0', '-map', '0:a:0?', '-f', 'null', '-'],
         timeout=120, code='MEDIA_DECODE_FAILED')
     issues = []
+    frame_check = inspect_frames(path, info)
+    audio_span = inspect_audio_span(path, duration) if info['has_audio'] else None
     audio = {'has_track': info['has_audio'], 'measured_seconds': 0.0,
              'rms_dbfs': None, 'peak_dbfs': None}
     if expect_audio and not info['has_audio']:
@@ -101,17 +104,28 @@ def inspect_output(path, *, expect_audio):
                     else:
                         quiet.append([start/8000, start/8000+1])
             if expect_audio:
-                for start, end in quiet[:8]:
-                    issues.append({'code': 'QUIET_INTERVAL', 'start': start, 'end': end,
-                        'message': '这里声音很轻，也可能是自然停顿，建议回听。'})
+                for start, end in quiet:
+                    offset = audio_span['start'] if audio_span and audio_span['checked'] else 0
+                    left, right = max(0., start + offset), min(duration, end + offset)
+                    if right > left:
+                        issues.append({'code': 'QUIET_INTERVAL', 'start': round(left, 3), 'end': round(right, 3),
+                            'message': '这里声音很轻，也可能是自然停顿，建议回听。'})
         elif expect_audio:
             issues.append({'code': 'AUDIO_EMPTY', 'start': 0.0, 'end': duration,
                            'message': '音轨没有解码出声音，请检查合成结果。'})
+    if expect_audio and audio_span:
+        issues = audio_span['issues'] + issues
+    issues += frame_check['issues']
+    issues.sort(key=lambda row: (row['start'], row['code']))
+    issue_count = len(issues)
     if before != fingerprint(path):
         raise DomainError('REVIEW_OUTPUT_CHANGED', '成片已变化，请检查当前版本。', 409)
     return {'revision': REVISION, 'scope': 'local_technical', 'output_sha256': before,
             'duration': duration, 'width': info['width'], 'height': info['height'],
-            'decoded_full_output': True, 'audio': audio, 'issues': issues,
+            'decoded_full_output': True, 'audio': audio, 'issues': issues[:10],
+            'issue_count': issue_count, 'issues_omitted': max(0, issue_count - 10),
+            'frame_scan': {k: v for k, v in frame_check.items() if k != 'issues'},
+            'audio_span': {k: v for k, v in audio_span.items() if k != 'issues'} if audio_span else None,
             'status': 'needs_attention' if issues else 'checked',
             'not_checked': ['字幕文字准确性', '音画同步与对白清晰度', '故事与综艺观感']}
 

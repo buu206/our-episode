@@ -1,5 +1,7 @@
 "use client";
 
+import type { SubtitleReviewTarget } from "./subtitle-editor";
+import { AudioCheck } from "./audio-check";
 import { useState } from "react";
 import { z } from "zod";
 import { Button, Dialog, MediaPlayer } from "@/components/ui";
@@ -10,6 +12,7 @@ const Report = z.object({
   version_id: z.string(), scope: z.literal("local_technical"),
   decoded_full_output: z.literal(true),
   status: z.enum(["checked", "needs_attention"]),
+  issues_omitted: z.number().int().nonnegative().optional(),
   issues: z.array(z.object({ code: z.string(), message: z.string().max(200),
     start: z.number().finite().nonnegative(), end: z.number().finite().positive() })
     .refine(row => row.end > row.start)).max(10),
@@ -31,10 +34,10 @@ const VisualReport = z.object({
 }).refine(report => report.sample_times.every(time => time < report.duration)
   && report.findings.every(finding => report.sample_times.includes(finding.time)));
 
-export function OutputCheck({ version, jobs, busy, onCheck, onVisualCheck, onSubtitles }: {
-  version: Version; jobs: Job[]; busy: boolean; onCheck?: () => void; onVisualCheck?: () => void; onSubtitles?: () => void;
+export function OutputCheck({ version, jobs, busy, onCheck, onVisualCheck, onAudioCheck, onSubtitles }: {
+  version: Version; jobs: Job[]; busy: boolean; onCheck?: () => void; onVisualCheck?: () => void; onAudioCheck?: () => void; onSubtitles?: (target?: SubtitleReviewTarget) => void;
 }) {
-  const [replay, setReplay] = useState<{ start: number; end: number } | null>(null);
+  const [replay, setReplay] = useState<{ start: number; end: number; visual: boolean } | null>(null);
   const [visualReplay, setVisualReplay] = useState<{ start: number; end: number } | null>(null);
   const job = [...jobs].reverse().find(row => row.kind === "technical_review" && row.version_id === version.id);
   const parsed = Report.safeParse(job?.result);
@@ -47,14 +50,15 @@ export function OutputCheck({ version, jobs, busy, onCheck, onVisualCheck, onSub
   const visual = visualJob?.state === "succeeded" && visualParsed.success && visualParsed.data.version_id === version.id ? visualParsed.data : null;
   return <div className={styles.check} aria-label="成片检查">
     {working ? <p role="status">导演助手正在检查画面与声音…</p> : report ? <>
-      <details><summary>{report.issues.length ? `有${report.issues.length}处声音值得回听` : "画面与音轨检查完成"}</summary>
+      <details><summary>{report.issues.length ? `播放检查 · ${report.issues.length + (report.issues_omitted || 0)}处待看` : "画面与音轨检查完成"}</summary>
         <p>这是本机播放检查，故事、字幕准确性和综艺感仍需看片判断。</p>
         {report.issues.map((issue, index) => <div key={index} className={styles.checkIssue}>
           <span>{issue.message}</span><Button disabled={busy || !version.media_url}
-            onClick={() => setReplay({ start: issue.start, end: issue.end })}>
-            回听 {Math.floor(issue.start)}—{Math.ceil(issue.end)}秒
+            onClick={() => setReplay({ start: issue.start, end: issue.end, visual: ["DARK_INTERVAL", "STILL_INTERVAL"].includes(issue.code) })}>
+            {["DARK_INTERVAL", "STILL_INTERVAL"].includes(issue.code) ? "回看" : "回听"} {Math.floor(issue.start)}—{Math.ceil(issue.end)}秒
           </Button>
         </div>)}
+        {!!report.issues_omitted && <p>先展示前10处，处理后可以重新检查。</p>}
       </details>
     </> : <><span>{job?.state === "failed" ? "成片检查未完成，视频仍保留" : "这版还没有播放检查"}</span>
       {onCheck && <Button disabled={busy} onClick={onCheck}>{job?.state === "failed" ? "重新检查" : "检查画面与声音"}</Button>}</>}
@@ -64,8 +68,9 @@ export function OutputCheck({ version, jobs, busy, onCheck, onVisualCheck, onSub
       {source.issues.slice(0, 3).map((issue, index) => <p key={index}>第{issue.segment_number}个镜头{issue.count > 1 ? `（${issue.count}处）` : ""}：{issue.message}</p>)}
       {source.issues.length > 3 && <p>先看以上重点，其余建议可以问导演。</p>}
       {source.issues.some(issue => issue.code === "CAPTION_REVIEW") && onSubtitles &&
-        <Button disabled={busy} onClick={onSubtitles}>去校对字幕</Button>}
+        <Button disabled={busy} onClick={() => onSubtitles()}>去校对字幕</Button>}
     </details>}
+    <AudioCheck version={version} jobs={jobs} busy={busy} onCheck={version.packaging === "variety_v2" ? onAudioCheck : undefined} onSubtitles={onSubtitles}/>
     {visual ? <details><summary>导演看了{visual.sample_times.length}处画面{visual.findings.length ? ` · ${visual.findings.length}条建议` : ""}</summary>
       <p>{visual.summary}</p>
       <p>仅抽样截图，未听声音；以下是待核对建议。</p>
@@ -77,7 +82,7 @@ export function OutputCheck({ version, jobs, busy, onCheck, onVisualCheck, onSub
     </details> : visualJob && ["queued", "running"].includes(visualJob.state) ? <p role="status">导演正在看抽样画面…</p>
       : visualJob?.state === "failed" ? <p>画面审片未完成，候选仍保留。{visualJob.error?.message}</p>
       : onVisualCheck && <details><summary>让导演看看画面</summary><p>抽样检查花字、遮挡和构图，使用本期模型预算。</p><Button disabled={busy} onClick={onVisualCheck}>检查这一版画面</Button></details>}
-    <Dialog open={!!replay} onClose={() => setReplay(null)} title="回听这一处">
+    <Dialog open={!!replay} onClose={() => setReplay(null)} title={replay?.visual ? "回看这一处" : "回听这一处"}>
       {replay && <MediaPlayer key={`${version.id}-${replay.start}`} src={version.media_url}
         title={version.title} start={replay.start} end={replay.end} />}
     </Dialog>

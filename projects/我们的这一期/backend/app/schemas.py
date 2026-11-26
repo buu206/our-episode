@@ -63,15 +63,39 @@ class DirectorChatMessage(Strict):
     client_id: str | None = None
 
 
+class SubtitleChangeOut(Strict):
+    before: str
+    after: str
+    start: float
+    end: float
+
+
+class CutChangeOut(Strict):
+    shot: int
+    start: float
+    end: float
+    reason: str
+    removed: bool = False
+
+
 class DirectorChatProposal(Strict):
     id: str
     message_id: str
-    kind: Literal['revise_directions', 'revise_narration', 'navigate']
+    kind: Literal['revise_directions', 'revise_narration', 'revise_subtitles', 'revise_cut', 'review_sequence', 'navigate']
     title: str
     explanation: str
     status: Literal['pending', 'applied', 'stale']
     requirement: str | None = None
     narration_text: str | None = None
+    subtitle_changes: list[SubtitleChangeOut] | None = None
+    cut_changes: list[CutChangeOut] | None = None
+    start: float | None = None
+    end: float | None = None
+    review_state: Literal['queued', 'running', 'succeeded', 'failed', 'stale'] | None = None
+    review_summary: str | None = None
+    before_seconds: float | None = None
+    after_seconds: float | None = None
+    base_version_id: str | None = None
     target_step: Literal['materials', 'direction', 'edit', 'preview'] | None = None
 
 
@@ -87,6 +111,7 @@ class DirectorChatState(Strict):
 
 
 class DirectorChatIn(Strict):
+    audio_focus_cue_id: str | None = Field(default=None, pattern=r'^[a-f0-9]{32}$')
     client_id: str = Field(min_length=8, max_length=80)
     text: str = Field(min_length=1, max_length=2000)
     version_id: str | None = Field(default=None, pattern=r'^[a-f0-9]{32}$')
@@ -131,6 +156,13 @@ class VersionIn(Strict):
     @model_validator(mode='after')
     def valid_transitions(self):
         validate_transitions(self.segments)
+        if any(s.frame_accents for s in self.segments):
+            if self.packaging != 'variety_v2':
+                raise ValueError('节点边框需要综艺节奏包装。')
+            if sum(len(s.frame_accents) for s in self.segments) > 6:
+                raise ValueError('一期最多六处节点边框。')
+            from .services.frame_accents import plan as frame_plan
+            frame_plan([s.model_dump() for s in self.segments])
         if any(s.editorial for s in self.segments):
             if self.packaging != 'variety_v2':
                 raise ValueError('编导版式需使用综艺节奏包装。')
@@ -316,6 +348,7 @@ class EvidenceReview(Strict):
 
 
 class DirectionSelect(Strict):
+    keep_cut_version_id: str | None = Field(default=None, pattern=r'^[a-f0-9]{32}$')
     direction_id: str = Field(min_length=1, max_length=80)
     revision: int = Field(ge=0)
     brief_revision: int | None = Field(default=None, ge=0)
@@ -326,3 +359,14 @@ class DirectionSelect(Strict):
 
 class NarrationConfirm(Strict):
     confirm_text: bool
+
+
+class SequenceReviewIn(Strict):
+    start: float = Field(ge=0, le=90)
+    end: float = Field(gt=0, le=90)
+
+    @model_validator(mode='after')
+    def bounded_window(self):
+        if not self.start < self.end or self.end-self.start > 24:
+            raise ValueError('观察区间必须递增且不超过24秒')
+        return self

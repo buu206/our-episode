@@ -25,13 +25,43 @@ async function run(path: string, init: RequestInit & { duplex?: "half" }, fetchI
 afterEach(() => vi.useRealTimers());
 
 describe("restricted same-origin proxy", () => {
+  it("supports an exact HTTPS public origin and marks only application cookies Secure", async () => {
+    const upstream = transport((_url, init) => {
+      expect(new Headers(init.headers).get('origin')).toBe('http://127.0.0.1:8788');
+      return Response.json({ ok: true }, { headers: { 'set-cookie': `episode_session=${token}; Path=/; HttpOnly; SameSite=Strict` } });
+    });
+    const result = await run('/auth/login', {method:'POST', body:'{}', headers:{Host:'studio.example.com',Origin:'https://studio.example.com'}}, upstream,
+      {appOrigin:'https://studio.example.com',backendMode:'normal'});
+    expect(result.status).toBe(200);
+    expect(result.headers.get('set-cookie')).toContain('; Secure');
+    await result.text();
+  });
+  it.each([
+    ['https://studio.example.com', 'other.example.com', 'https://studio.example.com', 400],
+    ['https://studio.example.com', 'studio.example.com', 'https://evil.example.com', 403],
+    ['http://studio.example.com:3000', 'studio.example.com:3000', 'http://studio.example.com:3000', 503],
+  ])('rejects unsafe hosted configuration or mismatched request %s %s', async (appOrigin, host, sentOrigin, status) => {
+    const upstream = transport(() => Response.json({ok:true}));
+    expect((await run('/auth/login',{method:'POST',body:'{}',headers:{Host:host,Origin:sentOrigin}},upstream,{appOrigin})).status).toBe(status);
+    expect(upstream).not.toHaveBeenCalled();
+  });
+  it('never auto-enters a hosted HTTPS session even when a local demo flag remains set', async () => {
+    vi.stubEnv('LOCAL_DEMO_ENTRY','1');
+    try {
+      const upstream = transport(() => Response.json({ok:true}));
+      const response = await run('/episodes',{headers:{Host:'studio.example.com',Cookie:''}},upstream,
+        {appOrigin:'https://studio.example.com',backendMode:'normal'});
+      expect(response.status).toBe(401);
+      expect(upstream).not.toHaveBeenCalled();
+    } finally { vi.unstubAllEnvs(); }
+  });
   it.each(['pause','resume','cancel'])("permits only bounded director control %s", async action => {
     const upstream=transport(()=>Response.json({id:episode,kind:'director_run',state:'paused'}));
     expect((await run(`/versions/${episode}/director-run/${action}`,{method:'POST',body:'{}'},upstream)).status).toBe(200);
     expect((await run(`/versions/${episode}/director-run/approve`,{method:'POST',body:'{}'},upstream)).status).toBe(404);
     expect((await run(`/versions/${episode}/director-run/${action}`,{method:'GET'},upstream)).status).toBe(404);
   });
-  it.each(['review', 'visual-review'])("permits an owner %s without opening arbitrary version actions", async (action) => {
+  it.each(['review', 'visual-review', 'audio-review', 'sequence-review'])("permits an owner %s without opening arbitrary version actions", async (action) => {
     const upstream = transport(() => Response.json({ id: episode, kind: 'technical_review', state: 'queued' }));
     const response = await run(`/versions/${episode}/${action}`, { method: 'POST', body: '{}' }, upstream);
     expect(response.status).toBe(200);
@@ -297,4 +327,22 @@ describe("restricted same-origin proxy", () => {
     expect(result.status).toBe(504); expect(vi.getTimerCount()).toBe(0);
     expect((await result.json()).error.code).toBe("UPSTREAM_TIMEOUT");
   });
+});
+
+it('bootstraps only the explicitly enabled loopback owner session, never other routes or LAN entry', async () => {
+  vi.stubEnv('LOCAL_DEMO_ENTRY', '1');
+  try {
+    const upstream = transport((_url, init) => {
+      expect(new Headers(init.headers).get('x-local-demo-entry')).toBe('1');
+      return Response.json({user_id:'local-owner',csrf_token:csrf}, {headers:{'set-cookie':`episode_session=${token}; HttpOnly; SameSite=Strict; Path=/`}});
+    });
+    const result = await run('/auth/me', {headers:{Cookie:''}}, upstream, {backendMode:'normal'});
+    expect(result.status).toBe(200);
+    expect(result.headers.get('set-cookie')).toContain('HttpOnly');
+    expect((await run('/episodes', {headers:{Cookie:''}}, upstream, {backendMode:'normal'})).status).toBe(401);
+    expect((await run('/auth/me', {headers:{Cookie:'',Host:'192.168.1.2:3000'}}, upstream,
+      {backendMode:'normal',appOrigin:'http://192.168.1.2:3000'})).status).toBe(401);
+    expect((await run('/auth/me', {headers:{Cookie:'',Origin:'https://evil.example'}}, upstream, {backendMode:'normal'})).status).toBe(403);
+    expect(upstream).toHaveBeenCalledOnce();
+  } finally { vi.unstubAllEnvs(); }
 });

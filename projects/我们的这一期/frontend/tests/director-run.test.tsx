@@ -26,3 +26,10 @@ it('polls only states with ongoing work',()=>{
  for(const s of ['paused','blocked','awaiting_user','cancelled'])expect(isActiveJob(run(s))).toBe(false);
  expect(isActiveJob({...run('active'),kind:'unknown'})).toBe(false);
 });
+
+it('describes accepted revisions without implying a new original draft or approval',()=>{
+ render(<DirectorRun run={{...run('active'),result:{scope:'approved_revision_render_and_local_check'}}} busy={false}/>);
+ expect(screen.getByText(/按你已确认的修改生成新候选/)).toBeInTheDocument();
+ expect(screen.queryByText(/按已选拍法合成原声初稿/)).not.toBeInTheDocument();
+ expect(screen.getByText(/完成后停在候选，不替你确认/)).toBeInTheDocument();
+});

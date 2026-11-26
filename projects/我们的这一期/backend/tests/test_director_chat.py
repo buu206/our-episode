@@ -422,3 +422,39 @@ def test_overlarge_fixed_context_fails_before_job_or_budget_reservation(client, 
     with client.app.state.repo.factory() as db:
         assert not list(db.scalars(select(Job).where(Job.episode_id == eid)))
         assert not list(db.scalars(select(Budget).where(Budget.episode_id == eid)))
+
+
+def seed_dialogue(client,eid,count):
+    """Synthetic completed history, with no provider requests or charged budget."""
+    with client.app.state.repo.transaction() as db:
+        ep=db.get(Episode,eid)
+        for i in range(count):
+            job=Job(owner_id=ep.owner_id,episode_id=eid,kind='director_chat',state='succeeded',idempotency_key='history-fixture-'+str(i))
+            db.add(job);db.flush()
+            db.add(DirectorChatTurn(owner_id=ep.owner_id,episode_id=eid,client_id='history-fixture-'+str(i),request_hash='fixture',
+                question='合成问题'+str(i),reply='合成回复'+str(i),source='demo',job_id=job.id,snapshot={},context={},
+                created_at=f'2020-01-01T00:{i//60:02d}:{i%60:02d}'))
+
+
+def test_fiftieth_turn_does_not_end_current_episode_or_expand_model_history(client,services):
+    auth,eid=episode_only(client);seed_dialogue(client,eid,50)
+    job=send(client,auth,eid,key='continue-after-fifty',text='继续讨论，不执行修改')
+    advance(client,job['id'])
+    ctx=services.contexts[-1]
+    assert len(ctx['history'])==8 and ctx['history_omitted_count']==92
+    with client.app.state.repo.factory() as db:
+        rows=list(db.scalars(select(DirectorChatTurn).where(DirectorChatTurn.episode_id==eid)))
+        assert len(rows)==51 and rows[0].question=='合成问题0'
+    assert services.counts['director_chat']==1
+
+
+def test_full_dialogue_reports_same_limit_in_state_and_before_submission(client,services):
+    from app.services.director_chat import MAX_TURNS,CHAT_LIMIT_MESSAGE
+    auth,eid=episode_only(client);seed_dialogue(client,eid,MAX_TURNS)
+    state=client.get(f'/api/v1/episodes/{eid}/director/chat').json()
+    assert not state['can_chat'] and state['reason']==CHAT_LIMIT_MESSAGE
+    result=send(client,auth,eid,key='beyond-history-cap',expected=409)
+    assert result['error']['code']=='DIRECTOR_CHAT_FULL'
+    assert services.counts.get('director_chat',0)==0
+    with client.app.state.repo.factory() as db:
+        assert not list(db.scalars(select(Budget)))

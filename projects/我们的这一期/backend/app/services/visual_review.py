@@ -1,4 +1,4 @@
-"""Bounded review of actual output snapshots under the existing three-source grant.
+"""Bounded review of actual output snapshots under the matching episode grant.
 
 No audio is sent, no edit is executed and no version is confirmed. All paid work
 uses Pipeline's durable ledger; files and permissions are checked again at send
@@ -19,7 +19,7 @@ from ..repository import DomainError
 from . import media, render_review
 from .deepseek import BASE, MODEL, DeepSeekDirector, empty_usage
 from .director import DirectorError, _invalid_constant, _unique_object
-from .material_trial import digest, key_guard, read_grant, verify_sources
+from .material_trial import digest, key_guard
 from .vision import _jpeg_frame, _check_jpeg
 
 REVISION = 'visual-review-v1'
@@ -68,15 +68,13 @@ def parse(raw, frames):
         raise DirectorError('INVALID_MODEL_OUTPUT', '审片结果未通过位置与格式校验。') from None
 
 
-def snapshot(repo, db, version):
+def snapshot(repo, db, version, *, operation='visual_review'):
     path = render_review.validate(repo, db, version)
     if (path.parent != repo.data_dir / 'outputs' or path.is_symlink()
             or path.parent.is_symlink() or path.suffix != '.mp4'):
         raise DomainError('INVALID_LOCAL_ASSET', '只检查应用内生成的成片。', 409)
-    grant = read_grant(repo.data_dir)
-    if version.episode_id != grant['episode_id'] or version.owner_id != grant['owner_id']:
-        raise DomainError('SCOPE_CHANGED', '当前授权仅覆盖原来的三段测试素材。', 409)
-    verify_sources(repo, grant)
+    from .review_grant import for_version
+    grant = for_version(repo, version, operation)
     if not version.segments or any(s['asset_id'] not in {a['id'] for a in grant['assets']} for s in version.segments):
         raise DomainError('SCOPE_CHANGED', '成片引用了本次授权之外的素材。', 409)
     ep = repo.owned(db, Episode, version.episode_id, version.owner_id)

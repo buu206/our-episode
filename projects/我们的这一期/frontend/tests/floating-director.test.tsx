@@ -378,3 +378,106 @@ describe("floating AI director", () => {
   });
 
 });
+
+it('shows exact subtitle changes and only applies after the explicit candidate button',async()=>{
+ chat.messages=[{id:'m1',role:'assistant',text:'先回听这句，再决定改字。',source:'model',created_at:'2026-11-16'}];
+ chat.proposals=[{id:pid,message_id:'m1',kind:'revise_subtitles',base_version_id:vid,title:'校对一句',explanation:'只改字幕',status:'pending',subtitle_changes:[{before:'喝了',after:'不喝了',start:2.1,end:3.4}]}];
+ renderWidget();await open();
+ expect(await screen.findByText('原文：喝了')).toBeVisible();expect(screen.getByText('建议：不喝了')).toBeVisible();
+ expect(mocks.api.mock.calls.filter(([,o])=>o?.method==='POST')).toHaveLength(0);
+ fireEvent.click(screen.getByRole('button',{name:'回听这处'}));
+ expect(screen.getByRole('dialog',{name:'回听建议对应的原话'})).toBeInTheDocument();
+ fireEvent.click(screen.getByRole('button',{name:'关闭弹窗'}));
+ fireEvent.click(screen.getByRole('button',{name:'确认改字并生成新版'}));
+ await waitFor(()=>expect(mocks.api).toHaveBeenCalledWith(`/episodes/${eid}/director/actions/${pid}`,{method:'POST',body:{confirm:true}}));
+});
+
+it('reviews a recut in place and keeps the base until explicitly accepted',async()=>{
+ chat.messages=[{id:'cut-message',role:'assistant',text:'先留完整这一句。',source:'model',created_at:'2026-11-16'}];
+ chat.proposals=[{id:pid,message_id:'cut-message',kind:'revise_cut',base_version_id:vid,title:'收紧开头',explanation:'第二段不进入新版',status:'pending',before_seconds:20,after_seconds:12,cut_changes:[{shot:1,start:1,end:13,reason:'保留完整回答',removed:false},{shot:2,start:13,end:20,reason:'这段不放入新版',removed:true}]}];
+ renderWidget();await open();
+ expect(await screen.findByText('镜头内容约 20 秒 → 12 秒')).toBeVisible();
+ expect(screen.getByRole('button',{name:'按这个剪法生成新版'})).toBeVisible();
+ fireEvent.click(screen.getByText('查看剪法与影响'));
+ expect(screen.getByText('不放入新版 · 原版第2段')).toBeVisible();
+ expect(mocks.api.mock.calls.filter(([,o])=>o?.method==='POST')).toHaveLength(0);
+ fireEvent.click(screen.getAllByRole('button',{name:'看看这一段'})[0]);
+ expect(screen.getByRole('dialog',{name:'查看建议对应的原片段'})).toBeInTheDocument();
+ fireEvent.click(screen.getByRole('button',{name:'关闭弹窗'}));
+ fireEvent.click(screen.getByRole('button',{name:'按这个剪法生成新版'}));
+ await waitFor(()=>expect(mocks.api).toHaveBeenCalledWith(`/episodes/${eid}/director/actions/${pid}`,{method:'POST',body:{confirm:true}}));
+});
+
+function requestCue(versionId=vid,cueId="e".repeat(32)) {
+ act(()=>window.dispatchEvent(new CustomEvent("director:review-cue",{detail:{versionId,cueId,label:"这句字幕 · 12—14秒"}})));
+}
+it("opens a specific review in the same director without sending until asked",async()=>{
+ renderWidget();requestCue();
+ await waitFor(()=>expect(screen.getByLabelText("和AI导演对话")).toHaveValue("帮我看看这句字幕，有必要改吗？先给建议，不直接改片。"));
+ expect(screen.getByText("正在讨论：这句字幕 · 12—14秒")).toBeVisible();
+ expect(mocks.api.mock.calls.some(([,o])=>o?.method==="POST")).toBe(false);
+ fireEvent.click(screen.getByRole("button",{name:"发送给AI导演"}));
+ await waitFor(()=>expect(mocks.api).toHaveBeenCalledWith(`/episodes/${eid}/director/chat`,expect.objectContaining({method:"POST",body:expect.objectContaining({version_id:vid,audio_focus_cue_id:"e".repeat(32)})})));
+ await waitFor(()=>expect(screen.getByLabelText("和AI导演对话")).toHaveValue(""));
+ expect(screen.queryByText("正在讨论：这句字幕 · 12—14秒")).not.toBeInTheDocument();
+});
+it("does not overwrite an existing draft or retarget it to a different version",async()=>{
+ renderWidget();await open();fireEvent.change(screen.getByLabelText("和AI导演对话"),{target:{value:"保留这条草稿"}});
+ requestCue();expect(await screen.findByText(/输入框已有内容/)).toBeVisible();
+ expect(screen.getByLabelText("和AI导演对话")).toHaveValue("保留这条草稿");
+ fireEvent.change(screen.getByLabelText("和AI导演对话"),{target:{value:""}});requestCue();
+ await waitFor(()=>expect(screen.getByLabelText("和AI导演对话")).not.toHaveValue(""));
+ act(()=>{window.history.replaceState(null,"",`/episodes/${eid}?step=preview&version=${otherId}`);window.dispatchEvent(new Event("episode:location"));});
+ fireEvent.click(screen.getByRole("button",{name:"发送给AI导演"}));
+ expect(await screen.findByText(/已切换版本/)).toBeVisible();
+ expect(mocks.api.mock.calls.some(([,o])=>o?.method==="POST")).toBe(false);
+});
+it("retains cue binding with a draft across remount and clears it when the draft is emptied",async()=>{
+ const view=renderWidget();requestCue();
+ await waitFor(()=>expect(screen.getByLabelText("和AI导演对话")).not.toHaveValue(""));
+ view.unmount();renderWidget();
+ expect(await screen.findByText("正在讨论：这句字幕 · 12—14秒")).toBeVisible();
+ fireEvent.change(screen.getByLabelText("和AI导演对话"),{target:{value:""}});
+ expect(screen.queryByText("正在讨论：这句字幕 · 12—14秒")).not.toBeInTheDocument();
+ fireEvent.change(screen.getByLabelText("和AI导演对话"),{target:{value:"换个话题"}});
+ await waitFor(()=>expect(screen.getByRole("button",{name:"发送给AI导演"})).toBeEnabled());
+ fireEvent.click(screen.getByRole("button",{name:"发送给AI导演"}));
+ await waitFor(()=>expect(mocks.api.mock.calls.find(([,o])=>o?.method==="POST")?.[1]?.body).not.toHaveProperty("audio_focus_cue_id"));
+});
+it("ignores cue requests for another version",()=>{
+ renderWidget();requestCue(otherId);
+ expect(screen.getByRole("button",{name:"打开AI导演"})).toBeVisible();
+ expect(mocks.api).not.toHaveBeenCalled();
+});
+
+it("keeps a paid action review in the same card and polls to its result without navigation", async()=>{
+  chat.messages=[{id:"review-message",role:"assistant",text:"先看清动作，再决定怎么剪。",source:"model",created_at:"2026-11-17"}];
+  chat.proposals=[{id:pid,message_id:"review-message",kind:"review_sequence",title:"查看这段动作",explanation:"先看过程，不直接剪。",status:"pending",start:11,end:34}];
+  mocks.api.mockImplementation(async(path:string,options:Options={})=>{
+    if(path.endsWith(`/director/actions/${pid}`)) {
+      chat.proposals=chat.proposals.map(p=>({...p,status:"applied",review_state:"queued"}));
+      return {ok:true,version_id:vid,job_id:jid};
+    }
+    return service(path,options);
+  });
+  renderWidget();await open();
+  expect(await screen.findByText("查看成片 11—34 秒")).toBeVisible();
+  expect(screen.getByText(/发送这段画面的抽帧/)).toBeVisible();
+  expect(mocks.api.mock.calls.some(([,o])=>o?.method==="POST")).toBe(false);
+  fireEvent.click(screen.getByRole("button",{name:"查看这段动作"}));
+  expect(await screen.findByText("已排队，稍后开始看这段。")).toBeVisible();
+  expect(mocks.push).not.toHaveBeenCalled();
+  chat.proposals=chat.proposals.map(p=>({...p,review_state:"succeeded",review_summary:"画面里人物先抬手，再低下头。"}));
+  await waitFor(()=>expect(screen.getByText("画面里人物先抬手，再低下头。")).toBeVisible(),{timeout:3000});
+  expect(screen.getByText(/抽样观察，不含声音/)).toBeVisible();
+  expect(mocks.api.mock.calls.filter(([,o])=>o?.method==="POST")).toHaveLength(1);
+});
+
+it("restores a failed observation without offering a blind paid retry",async()=>{
+  chat.messages=[{id:"failed-review",role:"assistant",text:"先看过程。",source:"model",created_at:"2026-11-17"}];
+  chat.proposals=[{id:pid,message_id:"failed-review",kind:"review_sequence",title:"查看这段动作",explanation:"先看过程。",status:"applied",start:1,end:3,review_state:"failed",review_summary:"本次没有看完，请先核对费用。"}];
+  renderWidget();await open();
+  expect(await screen.findByText("本次没有看完，请先核对费用。")).toBeVisible();
+  expect(screen.queryByRole("button",{name:"查看这段动作"})).not.toBeInTheDocument();
+  expect(mocks.api.mock.calls.some(([,o])=>o?.method==="POST")).toBe(false);
+});

@@ -1,8 +1,10 @@
 "use client";
 
 import { OutputCheck } from "./output-check";
+import { FinishingEditor } from "./finishing-editor";
+import { FinishingRehearsal } from "./finishing-rehearsal";
 import { DirectorRun, runIsLive, type RunAction } from "./director-run";
-import { SubtitleEditor } from "./subtitle-editor";
+import { SubtitleEditor, type SubtitleReviewTarget } from "./subtitle-editor";
 import type { Segment } from "@/lib/types";
 import previewStyles from "./preview.module.css";
 
@@ -232,29 +234,36 @@ export function EditorPanel({ episode, draft, busy, demo, guided = false, onCont
   </> : editor}<SourcePreviewDialog episode={episode} source={preview} onClose={() => setPreview(null)} /></>;
 }
 
-export function PreviewPanel({ episode, version, busy, demo, workflow, mediaReady, watched, acknowledged, onWatched, onAcknowledged, onVersion, onEdit, onRender, onNarration, onConfirm, onDownload, onSubtitles, onCheck, onVisualCheck, onRunControl }: {
+export function PreviewPanel({ episode, version, busy, demo, workflow, mediaReady, watched, acknowledged, onWatched, onAcknowledged, onVersion, onEdit, onRender, onNarration, onConfirm, onDownload, onSubtitles, onCheck, onVisualCheck, onAudioCheck, onRunControl, onFinished }: {
+  onFinished?: (version: Version) => Promise<void>;
   episode: Episode; version?: Version; busy: boolean; demo: boolean; workflow: boolean; mediaReady: boolean; watched: boolean; acknowledged: boolean;
   onWatched: () => void; onAcknowledged: (value: boolean) => void; onVersion: (id: string) => void; onEdit: (version: Version, without?: boolean) => void;
-  onRender: () => void; onNarration: () => void; onConfirm: () => void; onDownload: () => void; onSubtitles?: (version: Version, segments: Segment[]) => Promise<boolean>; onCheck?: () => void; onVisualCheck?: () => void; onRunControl?: (action: RunAction) => void;
+  onRender: () => void; onNarration: () => void; onConfirm: () => void; onDownload: () => void; onSubtitles?: (version: Version, segments: Segment[]) => Promise<boolean>; onCheck?: () => void; onVisualCheck?: () => void; onAudioCheck?: () => void; onRunControl?: (action: RunAction) => void;
 }) {
+  const [finishingOpen, setFinishingOpen] = useState(false);
   const [subtitlesOpen, setSubtitlesOpen] = useState(false);
+  const [subtitleTarget, setSubtitleTarget] = useState<SubtitleReviewTarget | undefined>();
+  function openSubtitles(target?: SubtitleReviewTarget) { setSubtitleTarget(target); setSubtitlesOpen(true); }
   const [versionsOpen, setVersionsOpen] = useState(false);
   const run = [...episode.jobs].reverse().find(job => job.kind === "director_run" && job.version_id === version?.id);
   const delegated = runIsLive(run);
   const playable = version && ["ready", "confirmed"].includes(version.state);
   const supported = !!version && ["manual", "ai", "demo"].includes(version.origin) && ["original", "light", "standard", "variety", "variety_v2"].includes(version.packaging) && ["draft", "failed", "ready", "confirmed", "restricted", "rendering", "voicing"].includes(version.state);
   const needsVoice = !!version?.narration_text.trim() && !version.narration_ready;
+  const hasRehearsal = episode.jobs.some(job => job.kind === "finishing_rehearsal" && Array.isArray(job.result?.checkpoints) && job.result.checkpoints.some(point => point?.version_id === version?.id));
   return <section className={`panel preview-panel ${previewStyles.preview}`}>
     <header className={previewStyles.heading}><div><span className="eyebrow">04 / 看看这一版</span><h2>{version?.title || "这一期，还没有保存版本"}</h2></div><Button aria-haspopup="dialog" onClick={() => setVersionsOpen(true)} disabled={busy}>切换版本（{episode.versions.length}）</Button></header>
     {version ? <>
       <div className={previewStyles.meta}><span className="chip">{run?.state === "paused" ? "已暂停" : run?.state === "pausing" ? "正在收尾后暂停" : run?.state === "blocked" ? "委托已停止" : versionState(version.state)}</span>{demo && <span className="chip">固定演示 · 非真实AI</span>}{["variety", "variety_v2"].includes(version.packaging) && <span className="chip variety-chip">{version.packaging === "variety_v2" ? "综艺节奏" : "基础综艺"}</span>}</div>
       <DirectorRun run={run} busy={busy} onControl={onRunControl} />
+      {hasRehearsal && <details><summary>查看此前的三步试跑</summary><FinishingRehearsal episode={episode} versionId={version.id} busy={busy} onVersion={onVersion} /></details>}
       <div className={previewStyles.stage}>
         <div className={previewStyles.screen}>
           {playable ? <MediaPlayer key={`${version.id}-${version.media_url}-${version.state}`} src={version.media_url} title={version.title} onEnded={onWatched} /> : <div className={previewStyles.waiting}><Film size={34} aria-hidden="true" /><h3>{delegated ? run?.stage : version.state === "rendering" ? "这一期，正在成片" : needsVoice ? "先决定开场的声音" : "片段已就位"}</h3><p>{run?.state === "paused" ? "点上方“继续制作”，导演就会接着做。" : run?.state === "blocked" ? "查看上方原因，已有输入继续保留。" : version.state === "rendering" ? "完成后，预览会出现在这里。" : needsVoice ? "核对旁白，或直接用现场原声。" : "生成后即可播放。"}</p></div>}
         </div>
         <aside className={previewStyles.controls} aria-label="本版操作">
-          {playable && <OutputCheck key={version.id} version={version} jobs={episode.jobs} busy={busy} onCheck={onCheck} onVisualCheck={!demo && workflow ? onVisualCheck : undefined} onSubtitles={onSubtitles && version.packaging === "variety_v2" ? () => setSubtitlesOpen(true) : undefined} />}
+          {playable && version.packaging === "variety_v2" && onFinished && <Button variant="primary" disabled={busy || delegated} onClick={() => setFinishingOpen(true)}>三步调整 · 文字 / 声音 / 包装</Button>}
+          {playable && <OutputCheck key={version.id} version={version} jobs={episode.jobs} busy={busy} onCheck={onCheck} onVisualCheck={!demo && workflow ? onVisualCheck : undefined} onAudioCheck={!demo && workflow ? onAudioCheck : undefined} onSubtitles={onSubtitles && version.packaging === "variety_v2" ? openSubtitles : undefined} />}
           {version.error && <Notice tone="error">{version.error.message}</Notice>}
           {version.state === "restricted" && <Notice tone="error">来源或授权已变化，请核对来源后建立新版本。</Notice>}
           {!supported && <Notice>当前页面尚不支持此版本的状态或包装，修改、确认和导出保持关闭。</Notice>}
@@ -266,12 +275,13 @@ export function PreviewPanel({ episode, version, busy, demo, workflow, mediaRead
           {!delegated && ["rendering", "voicing"].includes(version.state) && <p role="status">{version.state === "rendering" ? "正在合成，完成后自动更新。" : demo ? "正在生成非人声提示音。" : "正在生成旁白，完成后可合成视频。"}</p>}
           {version.state === "ready" && <div className={previewStyles.confirmation}><p>{watched ? "已经播完，可以确认这一版了。" : "看完后勾选，就能确认这一版。"}</p><label className="check-field"><input type="checkbox" checked={acknowledged} disabled={busy || !supported || !version.media_url} onChange={event => onAcknowledged(event.target.checked)} />我已看完，内容符合表达，素材有权使用。{demo && "（这是固定演示）"}</label><Button variant="primary" disabled={busy || !supported || !version.media_url || !acknowledged} onClick={onConfirm}>确认当前版本</Button></div>}
           {version.state === "confirmed" && supported && <><span className="chip success">已确认此版本</span><Button variant="primary" disabled={busy} onClick={onDownload}>导出这一版MP4</Button></>}
-          {onSubtitles && version.packaging === "variety_v2" && playable && <Button disabled={busy} onClick={() => setSubtitlesOpen(true)}>校对字幕</Button>}
+          {onSubtitles && version.packaging === "variety_v2" && playable && <Button disabled={busy} onClick={() => openSubtitles()}>校对字幕</Button>}
           <Button disabled={busy || !supported} onClick={() => onEdit(version)}>以这版为基础继续修改</Button>
         </aside>
       </div>
     </> : <div className="empty-state"><Film size={36} /><p>选好拍法，就可以生成第一版。</p></div>}
-    {subtitlesOpen && version && onSubtitles && <SubtitleEditor key={version.id} version={version} assets={episode.assets} busy={busy} onClose={() => setSubtitlesOpen(false)} onSave={segments => onSubtitles(version, segments)} />}
+    {finishingOpen && version && onFinished && <FinishingEditor key={version.id} version={version} onClose={() => setFinishingOpen(false)} onCreated={onFinished} />}
+    {subtitlesOpen && version && onSubtitles && <SubtitleEditor key={`${version.id}-${subtitleTarget?.cue_id ?? "all"}`} target={subtitleTarget} version={version} assets={episode.assets} busy={busy} onClose={() => setSubtitlesOpen(false)} onSave={segments => onSubtitles(version, segments)} />}
     <Dialog open={versionsOpen} onClose={() => setVersionsOpen(false)} title="本期版本">
       <div className="version-list">{[...episode.versions].reverse().map(item => <button key={item.id} className={`version-card${item.id === version?.id ? " selected" : ""}`} aria-pressed={item.id === version?.id} disabled={busy} onClick={() => { onVersion(item.id); setVersionsOpen(false); }}><strong>{item.title}</strong><span className="chip">{versionState(item.state)}</span><span className="muted">{originName(item.origin)}</span></button>)}</div>
     </Dialog>

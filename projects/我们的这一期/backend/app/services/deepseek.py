@@ -29,8 +29,8 @@ def price_band(timestamp):
     return 'peak' if local.weekday() < 5 and (9 <= local.hour < 12 or 14 <= local.hour < 18) else 'offpeak'
 
 
-def empty_usage(status='not_sent'):
-    return {'provider': 'deepseek', 'model': MODEL, 'input_tokens': None, 'output_tokens': None,
+def empty_usage(status='not_sent', *, model=MODEL):
+    return {'provider': 'deepseek', 'model': model, 'input_tokens': None, 'output_tokens': None,
             'request_id': None, 'retries': 0, 'cost_status': status,
             'cost_yuan': 0.0 if status == 'not_sent' else None}
 
@@ -46,13 +46,14 @@ def aggregate(records):
             'cost_yuan': float(sum(Decimal(str(r['cost_yuan'])) for r in records)) if known else None}
 
 
-def response_usage(envelope, started, ended, input_limit, output_limit):
-    usage = empty_usage('unknown')
+def response_usage(envelope, started, ended, input_limit, output_limit, *,
+                   model=MODEL, models=MODELS, rates=('.04', '2', '8'), pricing_revision='2026-11-10'):
+    usage = empty_usage('unknown', model=model)
     request_id = envelope.get('id')
     if isinstance(request_id, str) and re.fullmatch(r'[A-Za-z0-9_.-]{1,128}', request_id):
         usage['request_id'] = request_id
     returned = envelope.get('model')
-    if returned in MODELS:
+    if returned in models:
         usage['model_version'] = returned
     raw = envelope.get('usage', {})
     if not isinstance(raw, dict):
@@ -69,16 +70,21 @@ def response_usage(envelope, started, ended, input_limit, output_limit):
     band = price_band(started)
     if (not band or band != price_band(ended) or type(created) is not int
             or not started - 5 <= created <= ended + 5 or price_band(created) != band
-            or returned not in MODELS or not usage['request_id']):
+            or returned not in models or not usage['request_id']):
         return usage
     divisor = 1 if band == 'peak' else 2
-    cost = (Decimal(hit) * Decimal('.04') + Decimal(miss) * 2 + Decimal(outputs) * 8) / (1_000_000 * divisor)
+    cost = (Decimal(hit) * Decimal(rates[0]) + Decimal(miss) * Decimal(rates[1]) + Decimal(outputs) * Decimal(rates[2])) / (1_000_000 * divisor)
     usage.update(cost_yuan=float(cost), cost_status='known', price_band=band,
-                 pricing_revision='2026-11-10', usage_basis='provider_tokens')
+                 pricing_revision=pricing_revision, usage_basis='provider_tokens')
     return usage
 
 
 class DeepSeekDirector(CloudDirector):
+    transport_model = MODEL
+    response_models = MODELS
+    token_rates = ('.04', '2', '8')
+    pricing_revision = '2026-11-10'
+
     required_reservation_yuan = .28  # 120K input*2 + 4096 output*8, rounded up
     input_limit = 120000
     max_output_tokens = 4096
@@ -92,7 +98,7 @@ class DeepSeekDirector(CloudDirector):
 
     async def request(self, messages, reservation, input_limit=None):
         self._guard()
-        usage = empty_usage()
+        usage = empty_usage(model=self.transport_model)
         # Avoid starting across known price boundaries. Max duration is 100s.
         now = time.time()
         if price_band(now) is None or price_band(now) != price_band(now + 110):
@@ -108,13 +114,13 @@ class DeepSeekDirector(CloudDirector):
             async with client:
                 await self._check_budget(reservation, usage)
                 started = time.time()
-                usage = empty_usage('unknown')
+                usage = empty_usage('unknown', model=self.transport_model)
                 async with asyncio.timeout(100):
                     async with client.stream('POST', BASE + '/chat/completions', headers={
                         'Authorization': 'Bearer ' + self._config['DEEPSEEK_API_KEY']}, json={
-                        'model': MODEL, 'thinking': {'type': 'disabled'},
+                        'model': self.transport_model, 'thinking': {'type': 'disabled'}, 'temperature': .2,
                         'response_format': {'type': 'json_object'}, 'max_tokens': self.max_output_tokens,
-                        'temperature': .2, 'messages': messages}, follow_redirects=False) as response:
+                        'messages': messages}, follow_redirects=False) as response:
                         if response.status_code != 200:
                             raise DirectorError('MODEL_HTTP_ERROR', '模型请求失败，费用待核对。', usage=usage)
                         data = bytearray()
@@ -125,8 +131,10 @@ class DeepSeekDirector(CloudDirector):
                 envelope = json.loads(data, object_pairs_hook=_unique_object, parse_constant=_invalid_constant)
                 if not isinstance(envelope, dict):
                     raise ValueError('envelope')
-                usage = response_usage(envelope, started, time.time(), input_limit or self.input_limit, self.max_output_tokens)
-                if envelope.get('model') not in MODELS:
+                usage = response_usage(envelope, started, time.time(), input_limit or self.input_limit, self.max_output_tokens,
+                    model=self.transport_model, models=self.response_models, rates=self.token_rates,
+                    pricing_revision=self.pricing_revision)
+                if envelope.get('model') not in self.response_models:
                     raise DirectorError('MODEL_NOT_ALLOWED', '服务返回的型号不在已核实范围内。', usage=usage)
                 choice = envelope['choices'][0]
                 if choice.get('finish_reason') != 'stop' or not isinstance(choice['message']['content'], str):
@@ -139,10 +147,16 @@ class DeepSeekDirector(CloudDirector):
         except Exception:
             raise DirectorError('MODEL_REQUEST_FAILED', '模型处理失败，请核对费用后再操作。', usage=usage) from None
 
+    def _proposal_input(self, evidence, assets, background):
+        return prepare_input(evidence, assets, background)
+
+    def _proposal_prompt(self):
+        return Path(__file__).with_name('prompts').joinpath('director.txt').read_text()
+
     async def propose(self, evidence, assets, background='', *, reservation=None):
         self._guard()
-        user = prepare_input(evidence, assets, background)
-        prompt = Path(__file__).with_name('prompts').joinpath('director.txt').read_text()
+        user = self._proposal_input(evidence, assets, background)
+        prompt = self._proposal_prompt()
         if len((user + prompt).encode()) + 2048 > self.input_limit:
             raise DirectorError('INPUT_LIMIT', '编导输入超出本轮费用预留范围。', usage=empty_usage())
         content, usage = await self.request([{'role': 'system', 'content': prompt},

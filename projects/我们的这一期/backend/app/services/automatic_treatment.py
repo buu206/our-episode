@@ -17,7 +17,7 @@ from PIL import Image, ImageDraw, ImageFont
 from . import media
 from .dialogue_captions import caption_timeline
 
-REVISION = 'automatic-treatment-v1.2'
+REVISION = 'automatic-treatment-v1.5-literal-accents'
 
 
 def detect_faces(base, folder):
@@ -59,15 +59,22 @@ def valid_face(face):
     try:
         x,y,w,h=face['box']
         points=[p for eye in face['eyes'] for p in eye]+face['mouth']
+        eyes=[p for eye in face['eyes'] for p in eye]
+        # In coloured/dim footage Vision can confidently fit an upside-down
+        # landmark template to an upright face. Skip uncertain/rotated geometry;
+        # it must not produce a hollow forehead-only sticker or a false mouth peak.
+        upright=(bool(eyes) and bool(face['mouth']) and
+                 sum(p[1] for p in face['mouth'])/len(face['mouth']) >
+                 sum(p[1] for p in eyes)/len(eyes)+h*.12)
         # MediaPipe exposes a configured presence threshold, not a per-face
         # probability. Do not manufacture a confidence score for that provider.
         quality = (face.get('provider') == 'mediapipe' and face.get('presence_threshold') == .8
                    if 'confidence' not in face else math.isfinite(face['confidence']) and .8 <= face['confidence'] <= 1)
-        return (quality and len(face['eyes']) == 2 and all(len(eye) >= 4 for eye in face['eyes']) and
+        return (quality and upright and len(face['eyes']) == 2 and all(len(eye) >= 4 for eye in face['eyes']) and
             .06 <= w <= .7 and .06 <= h <= .7 and
             0 <= x < x+w <= 1.001 and 0 <= y < y+h <= 1.001 and len(points)>12 and
             all(len(p)==2 and all(math.isfinite(v) and 0<=v<=1 for v in p) for p in points))
-    except (KeyError,TypeError,ValueError):return False
+    except (KeyError,TypeError,ValueError,IndexError):return False
 
 
 def overlap(a,b):
@@ -91,53 +98,71 @@ def face_at(observations, t, anchor):
     a,b=faces;k=max(0,min(1,(t-pair[0]['time'])/max(.001,pair[1]['time']-pair[0]['time'])))
     def lerp(p,q):return [(1-k)*x+k*y for x,y in zip(p,q)]
     if any(len(x)!=len(y) for x,y in zip(a['eyes'],b['eyes'])) or len(a['mouth'])!=len(b['mouth']):return None
-    return {'box':lerp(a['box'],b['box']), 'eyes':[[lerp(p,q) for p,q in zip(x,y)] for x,y in zip(a['eyes'],b['eyes'])],
+    result = {'box':lerp(a['box'],b['box']), 'eyes':[[lerp(p,q) for p,q in zip(x,y)] for x,y in zip(a['eyes'],b['eyes'])],
             'mouth':[lerp(p,q) for p,q in zip(a['mouth'],b['mouth'])]}
+    if a.get('contour_kind') == b.get('contour_kind') and len(a.get('contour', [])) == len(b.get('contour', [])):
+        ac,bc=a.get('contour', []),b.get('contour', [])
+        if ac and a.get('contour_kind')=='jaw':
+            def distance(points):return sum((p[0]-q[0])**2+(p[1]-q[1])**2 for p,q in zip(ac,points))
+            if distance(list(reversed(bc)))<distance(bc):bc=list(reversed(bc))
+        result.update(contour=[lerp(p,q) for p,q in zip(ac,bc)], contour_kind=a.get('contour_kind'))
+    return result
 
 
-def plan_effects(observations, captions, protected=(), speech_spans=None):
+def plan_effects(observations, captions, protected=(), speech_spans=None, face_protected=None):
     def allowed(start,end):return not any(a<end and b>start for a,b in protected)
     events=[]
+    def face_allowed(start,end):return not any(a<end and b>start for a,b in (protected if face_protected is None else face_protected))
     # Transcript reaction anchors locate an interval, not the identity of its speaker.
     for line in captions:
         if line.get('subtitle_changed'):continue
         if not any(word in line['text'] for word in ('呛','哈哈','哎呀')):continue
         start=line['start'];end=min(start+1.1,line['end']+.35)
         rows=[r for r in observations if start+.1<=r['time']<=end-.1 and r['faces']]
-        if not rows or not allowed(start,end):continue
+        if not rows or not face_allowed(start,end):continue
         row=max(rows,key=lambda r:max(f['box'][2]*f['box'][3] for f in r['faces']))
         face=max(row['faces'],key=lambda f:f['box'][2]*f['box'][3])
         if face_at(observations,row['time'],face['box']) is None:continue
         if any(abs(start-e['start'])<6 for e in events):continue
         events.append(dict(kind='eyes',start=start,end=end,anchor=face['box'],
-            basis='confirmed_reaction_phrase',evidence_id=line.get('evidence_id'),freeze=0))
+            basis='confirmed_reaction_phrase',evidence_id=line.get('evidence_id'),freeze=0, peak=row['time']))
         if len(events)>=2:break
     # A visual pause only in a transcript-free gap, at an observed open-mouth peak.
     for row in sorted(observations,key=lambda r:max((mouth_ratio(f) for f in r['faces']),default=0),reverse=True):
-        t=row['time'];start=t-.3;end=t+.6
-        if start<.5 or not allowed(start,end) or any(a['start']<end+.3 and a['end']>start-.3 for a in (captions if speech_spans is None else speech_spans)):continue
+        t=row['time'];start=t-.15;end=t+1.0
+        if start<.5 or not face_allowed(start,end) or any(a['start']<end+.3 and a['end']>start-.3 for a in (captions if speech_spans is None else speech_spans)):continue
         if any(abs(t-e['start'])<6 for e in events):continue
         candidates=[f for f in row['faces'] if mouth_ratio(f)>.28]
         if not candidates:continue
         face=max(candidates,key=mouth_ratio)
         if face_at(observations,t,face['box']) is None:continue
-        # Mouth landmarks alone cannot establish lip visibility behind a bottle.
-        # Use the detected eyes; do not warp the possibly occluded mouth.
+        # Quote the measured face as a graphic, without freezing the underlying
+        # action or classifying an emotion. Do not warp an occluded mouth.
         events.append(dict(kind='eyes',start=start,end=end,anchor=face['box'],
-            basis='mouth_geometry_peak_eye_emphasis',freeze=.3,peak=t))
+            basis='mouth_geometry_peak_eye_emphasis',freeze=0,peak=t))
         break
     quotes=[]
-    for line in captions:
+    from .dialogue_accents import complete_quote
+    vocabulary=('吐不了','不用不用','包住它','嘴包住','嗓子','看看','准备','先喝口')
+    # Pick the stronger literal phrase within a nearby cluster, not whichever ASR cue came first.
+    ordered=sorted(captions,key=lambda c:min((vocabulary.index(w) for w in vocabulary if w in c['text']),default=99))
+    for line in ordered:
         if line.get('subtitle_changed'):continue
         context=line.get('context',line['text'])
-        if any(word in context for word in ('不是','别说','别以为','没说','不一定','假如','如果','?','？')):continue
-        text=next((word for word in ('吐不了','不用不用','准备','先喝口') if word in line['text']),None)
-        start=line['start'];end=min(line['end']+.15,start+1.4)
-        if not text or start<3.2 or not allowed(start,end) or any(abs(start-e['start'])<4 for e in quotes):continue
+        if any(word in context for word in ('不是','别说','别以为','没说','不一定','假如','如果')):continue
+        if '?' in line['text'] or '？' in line['text']:continue
+        # Prefer a complete source clause. Legacy cues lacking alignment keep
+        # their established small vocabulary; new scenes need not use it.
+        full_quote=complete_quote(line)
+        text=full_quote or next((word for word in vocabulary if word in line['text']),None)
+        start=line['start'];end=min(max(line['end']+.15,start+1.05),start+1.6)
+        if (not text or start<3.2 or not allowed(start,end)
+                or any(abs(start-e['start'])<4 or e['text']==text for e in quotes)):continue
         nearby=[f for r in observations if start<=r['time']<=end for f in r['faces']]
-        position=min((.14,.64),key=lambda y:sum(overlap([.2,y-.08,.6,.16],f['box']) for f in nearby))
+        position=min((.18,.64),key=lambda y:sum(overlap([.2,y-.08,.6,.16],f['box']) for f in nearby))
         quotes.append(dict(kind='quote',text=text,start=start,end=end,freeze=0,position=position,
-                           basis='verbatim_confirmed_dialogue',evidence_id=line.get('evidence_id')))
+                           basis='verbatim_confirmed_dialogue',evidence_id=line.get('evidence_id'),
+                           **({'sound':'none'} if full_quote else {})))
         if len(quotes)==3:break
     return sorted(events[:3]+quotes,key=lambda e:e['start'])
 
@@ -171,22 +196,33 @@ def bulge(image, points, strength):
     return image
 
 
-def subtitle(image,text):
-    w,h=image.size;draw=ImageDraw.Draw(image)
-    size=round(min(w,h)*.054)
+def subtitle_layout(w,h,text):
+    draw=ImageDraw.Draw(Image.new('RGB',(w,h)))
+    size=round(min(w,h)*.071)
     sans=Path('/System/Library/Fonts/STHeiti Medium.ttc')
     f=ImageFont.truetype(str(sans),size=size) if sans.is_file() else media._font(size,text)
     lines=media._wrap(text,draw,f,w*.86)
     # White, thick dark outline and a small warm accent. No large opaque panel.
-    y=h*.88-(len(lines)-1)*size*1.3
+    y=h*.865-(len(lines)-1)*size*1.22
+    return f,lines,size,y
+
+
+def subtitle(image,text):
+    w,h=image.size;draw=ImageDraw.Draw(image)
+    f,lines,size,y=subtitle_layout(w,h,text)
+    # Compact translucent backing keeps text legible on bright clothes and dark footage.
+    layer=Image.new('RGBA',image.size);panel=ImageDraw.Draw(layer)
+    widths=[draw.textlength(line,font=f) for line in lines]
+    panel.rounded_rectangle((w*.5-max(widths)/2-size*.4,y-size*.62,w*.5+max(widths)/2+size*.4,y+(len(lines)-1)*size*1.22+size*.66),radius=size*.24,fill=(22,18,29,160))
+    image.paste(Image.alpha_composite(image.convert('RGBA'),layer).convert('RGB'));draw=ImageDraw.Draw(image)
     for line in lines:
-        draw.text((w*.5,y),line,font=f,fill='#fffdf5',stroke_width=max(2,round(size*.085)),stroke_fill='#292329',anchor='mm')
-        y+=size*1.3
+        draw.text((w*.5,y),line,font=f,fill='#fffdf5',stroke_width=max(2,round(size*.07)),stroke_fill='#292329',anchor='mm')
+        y+=size*1.22
 
 
 def quote_sticker(image,event,t,observations):
     from .sticker_beats import letter, _paste
-    w,h=image.size;size=round(min(w,h)*.09)
+    w,h=image.size;size=round(min(min(w,h)*.145,w*.76/max(1,len(event['text']))))
     glyphs=[letter(c,size,'#ffe55b' if i%2==0 else '#ff87ad') for i,c in enumerate(event['text'])]
     length=size*len(glyphs)
     # Choose one placement for the entire cue, avoiding per-frame corner jumps.
@@ -200,6 +236,7 @@ def quote_sticker(image,event,t,observations):
 
 
 def render_automatic(base,output,segments,temp,offset=0,observations=None):
+    from .reaction_packaging import display_captions, face_sticker, paste_reaction, write_sounds, bound_effects
     captions=caption_timeline(segments,offset)
     if not captions:return base,{'automatic_revision':REVISION,'subtitle_count':0,'automatic_effects':[],'detector':'no_confirmed_dialogue'}
     info=media._inspect(base);w,h=info.width,info.height
@@ -209,16 +246,24 @@ def render_automatic(base,output,segments,temp,offset=0,observations=None):
     from .editing import timeline
     protected=[(offset+t.start,offset+t.end) for s,t in zip(segments,timeline(segments)) if s.get('_preserve_expression') or s.get('visual_beats')]
     from .editorial_plan import compile_editorial
-    protected += [(row['start'],row['end']) for row in compile_editorial(segments,offset) if row['beat'].treatment!='none']
+    editorial=compile_editorial(segments,offset)
+    face_protected=protected+[(row['start'],row['end']) for row in editorial if row['beat'].treatment=='chapter']
+    protected += [(row['start'],row['end']) for row in editorial if row['beat'].treatment!='none']
     protected += [(0,offset)] if offset else []
     speech_spans=[{'start':offset+t.start+a-s['start'],'end':offset+t.start+b-s['start']}
         for s,t in zip(segments,timeline(segments)) for a,b in s.get('_speech_intervals',[])]
-    events=plan_effects(observations,captions,protected,speech_spans or None)
+    boundaries=[min(info.duration,offset+t.end) for t in timeline(segments)]
+    interview_spans=[(offset+t.start,offset+t.end) for s,t in zip(segments,timeline(segments)) if s.get('_preserve_expression')]
+    display=display_captions(captions,boundaries=boundaries,speech_spans=speech_spans or captions,
+                             hold_short=True,protected=interview_spans)
+    face_protected += [(0,offset)] if offset else []
+    events=bound_effects(plan_effects(observations,captions,protected,speech_spans or None,face_protected),boundaries)
+    video_output=temp/'automatic-visual.mp4'
     decode=[media._binary('ffmpeg'),'-nostdin','-v','error','-i',str(base),'-vf','fps=30','-f','rawvideo','-pix_fmt','rgb24','pipe:1']
     encode=[media._binary('ffmpeg'),'-nostdin','-v','error','-n','-f','rawvideo','-pixel_format','rgb24','-video_size',f'{w}x{h}',
         '-framerate','30','-i','pipe:0','-i',str(base),'-map','0:v','-map','1:a:0','-c:v','libx264','-preset','veryfast',
-        '-crf','20','-threads','2','-pix_fmt','yuv420p','-c:a','copy','-t',str(info.duration),'-map_metadata','-1','-movflags','+faststart',str(output)]
-    rendered={i:0 for i in range(len(events))};frozen={};index=0
+        '-crf','20','-threads','2','-pix_fmt','yuv420p','-c:a','copy','-t',str(info.duration),'-map_metadata','-1','-movflags','+faststart',str(video_output)]
+    rendered={i:0 for i in range(len(events))};stickers={};audible={};index=0
     # No subprocess error text (potential source paths) enters user logs.
     with (temp/'decode-error.txt').open('wb') as de,(temp/'encode-error.txt').open('wb') as ee:
         decoder=subprocess.Popen(decode,stdout=subprocess.PIPE,stderr=de)
@@ -239,23 +284,23 @@ def render_automatic(base,output,segments,temp,offset=0,observations=None):
                 for i,event in enumerate(events):
                     if not event['start']<=t<event['end']:continue
                     if event['kind']=='quote':
-                        image=quote_sticker(image,event,t,observations);rendered[i]+=1;continue
-                    ft=t
-                    if event['freeze'] and event['peak']<=t<event['peak']+event['freeze']:
-                        if i not in frozen:frozen[i]=(image.copy(),t)
-                        image,ft=frozen[i][0].copy(),frozen[i][1]
-                    face=face_at(observations,ft,event['anchor'])
-                    if face is None:continue
-                    envelope=min(1,(t-event['start'])/.15,(event['end']-t)/.15)
-                    for points in (face['eyes'] if event['kind']=='eyes' else [face['mouth']]):
-                        image=bulge(image,points,.65*max(0,envelope))
-                    # Short rays follow measured geometry, leaving the dialogue lane free.
-                    x,y,fw,fh=face['box'];draw=ImageDraw.Draw(image)
-                    for side in (-1,1):
-                        cx=(x+fw*(.5+side*.7))*w;cy=(y+fh*.35)*h
-                        draw.line((cx,cy,cx+side*16*envelope,cy-12*envelope),fill='#ffdb66',width=max(2,w//180))
+                        image=quote_sticker(image,event,t,observations);rendered[i]+=1
+                        if event.get('sound')!='none':audible.setdefault(i,t)
+                        continue
+                    face=face_at(observations,t,event['anchor'])
+                    if i not in stickers and t>=event['peak'] and face is not None:
+                        subject=face_sticker(image,face)
+                        if subject is not None:stickers[i]=(subject,t)
+                    if i in stickers:
+                        subject,captured=stickers[i]
+                        image=paste_reaction(image,subject,t-captured,event['end']-captured,event['anchor'])
+                        audible.setdefault(i,captured)
+                    elif face is not None:
+                        envelope=max(0,min(1,(t-event['start'])/.15,(event['end']-t)/.15))
+                        for points in face['eyes']:image=bulge(image,points,1.1*envelope)
+                    else:continue
                     rendered[i]+=1
-                active=[c for c in captions if c['start']<=t<c['end']]
+                active=[c for c in display if c['start']<=t<c['end']]
                 if active:subtitle(image,' / '.join(dict.fromkeys(c['text'] for c in active)))
                 encoder.stdin.write(image.tobytes());index+=1
             encoder.stdin.close()
@@ -264,9 +309,23 @@ def render_automatic(base,output,segments,temp,offset=0,observations=None):
             decoder.kill();encoder.kill();decoder.wait();encoder.wait();raise
         finally:
             deadline.cancel()
+    sound_events=[dict(events[i],audible_start=t) for i,t in audible.items()]
+    sound_cues=[]
+    if sound_events:
+        wav=temp/'automatic-cartoon.wav'
+        sound_cues=write_sounds(wav,info.duration,sound_events,speech_spans or captions)
+        media._run('ffmpeg',['-nostdin','-v','error','-n','-i',str(video_output),'-i',str(wav),
+            '-filter_complex','[0:a][1:a]amix=inputs=2:normalize=0,alimiter=limit=0.95:level=0:latency=1[a]',
+            '-map','0:v:0','-map','[a]','-c:v','copy','-c:a','aac','-b:a','192k',
+            '-t',str(info.duration),'-movflags','+faststart',str(output)],timeout=120,code='MEDIA_RENDER_FAILED')
+    else:os.link(video_output,output)
     result=media.probe(output)
     if abs(result['duration']-info.duration)>.12 or not result['has_audio']:raise ValueError('Output mismatch')
     return output,{'automatic_revision':REVISION,'subtitle_count':len(captions),'detector':status,
+        'display_subtitle_count':len(display),'cartoon_sounds':sound_cues,
+        'display_subtitles':[{'cue_ids':c['cue_ids'],'start':c['start'],'end':c['end'],
+                              'source_end':c.get('source_end',c['end'])} for c in display],
+        'face_stickers':len(stickers),'face_mask':'landmark_contour_forehead_cap_not_hair_segmentation',
         'observed_frames':len(observations),'automatic_effects':[{**e,'rendered_frames':rendered[i]} for i,e in enumerate(events)],
         'mouth_warp':'disabled_without_occlusion_evidence',
         'source_digest':hashlib.sha256(base.read_bytes()).hexdigest()}

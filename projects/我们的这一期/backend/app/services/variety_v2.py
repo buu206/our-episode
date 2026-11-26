@@ -25,7 +25,7 @@ from .media import MediaError
 from .packaging import _narration, add_narrated_intro
 from .variety import _caption_windows, _font, _text
 
-REVISION = "variety-v2.2"
+REVISION = "variety-v2.3"
 INK = "#251b23"
 PAPER = "#fff8e8"
 YELLOW = "#ffdc4c"
@@ -206,12 +206,21 @@ def _sfx(path: Path, duration: float, cues: list[tuple[float, str]]) -> int:
         if cue < 0 or cue >= duration or (accepted and cue - accepted[-1] < .9) or len(accepted) >= 12:
             continue
         accepted.append(cue)
-        seconds = {"impact": .14, "aside": .11, "stamp": .18}.get(kind, .12)
+        seconds = {"impact": .14, "aside": .11, "stamp": .18, 'wood':.08, 'resolve':.18}.get(kind, .12)
         start, count = round(cue * rate), round(seconds * rate)
         for index in range(min(count, len(samples) - start)):
             t, u = index / rate, index / count
             envelope = math.sin(math.pi * u) * math.exp(-4 * u)
-            if kind == "aside":
+            if kind == 'wood':
+                # Original dry tap; no stock laughter or synthetic human voice.
+                value = (.65*math.sin(2*math.pi*820*t)+.35*math.sin(2*math.pi*1733*t))*math.exp(-12*u)
+                samples[start+index]=round(9000*(1-math.exp(-80*u))*value)
+                continue
+            elif kind == 'resolve':
+                value = (.65*math.sin(2*math.pi*660*t)+.25*math.sin(2*math.pi*990*t))*math.exp(-5*u)
+                samples[start+index]=round(8200*(1-math.exp(-60*u))*value)
+                continue
+            elif kind == "aside":
                 value = math.sin(2 * math.pi * (1100 * t - 1500 * t * t)) + .2 * math.sin(2 * math.pi * 2300 * t)
             elif kind == "stamp":
                 value = .7 * math.sin(2 * math.pi * (180 * t - 150 * t * t)) + .2 * math.sin(2 * math.pi * 1450 * t)
@@ -226,6 +235,21 @@ def _sfx(path: Path, duration: float, cues: list[tuple[float, str]]) -> int:
         audio.setframerate(rate)
         audio.writeframes(samples.tobytes())
     return len(accepted)
+
+
+def visual_sound_cues(segments, offset=0):
+    """Explicit action cues may be silent or delayed, independent of text entry.
+
+    Missing settings keep historical saved edits reproducible.
+    """
+    from .visual_beats import plan
+    cues=[]
+    for beat,at in plan(segments,offset):
+        if beat.sound=='none':continue
+        if beat.sound=='legacy':
+            if beat.kind in ('cutout','headline'):cues.append((at+.08,'stamp' if beat.kind=='cutout' else 'aside'))
+        else:cues.append((at+beat.sound_delay,beat.sound))
+    return cues
 
 
 def _decorate(base: Path, output: Path, temp: Path, *, title: str,
@@ -404,16 +428,16 @@ def render_variety(segments: list[dict], output: Path, title: str = "", narratio
                 add_narrated_intro(cut, narration, base, title="")
             complete = temp / "complete.mp4"
             from .visual_beats import plan
-            accents = [(at + .08, 'stamp' if beat.kind == 'cutout' else 'aside')
-                       for beat, at in plan(segments, offset) if beat.kind in ('cutout', 'headline')]
+            accents = visual_sound_cues(segments,offset)
             editorial=compile_editorial(segments,offset)
-            accents += [(x['start']+.08,'stamp' if x['beat'].treatment=='chapter' else 'aside')
-                        for x in editorial if x['beat'].treatment!='none']
+            from .editorial_layout import prepare_layout,sound_cues
+            layouts=prepare_layout(base,segments,temp,offset)
+            accents += sound_cues(editorial,layouts)
             result = _decorate(base, complete, temp, title='' if editorial else title, captions=captions, offset=offset,
                                timings=timings, visual_accents=accents)
             if editorial:
                 from .editorial_render import render_editorial
-                complete,metadata=render_editorial(complete,temp/'editorial.mp4',segments,temp,offset)
+                complete,metadata=render_editorial(complete,temp/'editorial.mp4',segments,temp,offset,layouts=layouts)
                 result.update(metadata)
             if any(s.get('visual_beats') for s in segments):
                 from .visual_beats import decorate_visual_beats
@@ -423,6 +447,9 @@ def render_variety(segments: list[dict], output: Path, title: str = "", narratio
             from .automatic_treatment import render_automatic
             complete, automatic = render_automatic(complete, temp/'automatic.mp4', segments, temp, offset)
             result.update(automatic)
+            from .frame_accents import render as render_frames
+            complete, frames = render_frames(complete, temp/'framed.mp4', segments, offset)
+            result.update(frames)
             os.link(complete, output)
             return result
     except MediaError:

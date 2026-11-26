@@ -20,6 +20,7 @@ def display_text(text):
 
 def attach_dialogue(db, episode, segments):
     if episode.evidence_confirmed_revision != episode.evidence_revision:
+        attach_subtitle_draft(db, episode, segments)
         return
     jobs = db.scalars(select(Job).where(Job.episode_id == episode.id,
         Job.owner_id == episode.owner_id, Job.kind == 'analysis', Job.state == 'succeeded')
@@ -65,9 +66,114 @@ def attach_dialogue(db, episode, segments):
         segment['_dialogue'] = [row for row in lines if row['text']]
 
 
+def draft_rows_from_steps(steps, asset_ids):
+    """Deterministic grouping of stored ASR, without inventing words or timings.
+
+    Speaker labels are request-local: keep both label and scope at joins. Long
+    provider utterances keep their timing and are flagged for review, never
+    split into guessed word times. Uncertain speech stays editable, not deleted.
+    """
+    rows = []
+    for aid in asset_ids:
+        words = steps.get('asr:' + aid, [])
+        if not isinstance(words, list):
+            continue
+        group = None
+        for item in words:
+            if not isinstance(item, dict) or item.get('asset_id') != aid:
+                group = None
+                continue
+            a,b,text = item.get('start'),item.get('end'),item.get('text')
+            if (type(a) not in (int,float) or type(b) not in (int,float)
+                    or not math.isfinite(a) or not math.isfinite(b) or not 0 <= a < b
+                    or not isinstance(text,str) or not text.strip() or len(text)>500
+                    or any(ord(c)<32 for c in text)):
+                group = None
+                continue
+            text = text.strip()
+            speaker = (item.get('speaker_scope'), item.get('speaker'))
+            # No overlap joins: concurrent speech needs separate captions.
+            if (group and group['_speaker']==speaker and 0 <= a-group['end'] < .3
+                    and not re.search(r'[，。！？；,.!?;]$', group['text'])
+                    and len(compact(group['text']))+len(compact(text))<=14
+                    and b-group['start']<=3.5):
+                joiner=' ' if group['text'][-1:].isascii() and text[:1].isascii() and group['text'][-1:].isalnum() and text[:1].isalnum() else ''
+                group['text']+=joiner+text
+                group['end']=b
+            else:
+                group=dict(asset_id=aid,start=a,end=b,text=text,_speaker=speaker)
+                rows.append(group)
+    for row in rows:
+        row.pop('_speaker')
+    return rows
+
+
+def published_revision(source):
+    if source.kind == 'analysis':
+        if source.payload.get('validation_only'):
+            return None
+        return (source.result or {}).get('revision')
+    return source.payload.get('revision')
+
+
+def attach_subtitle_draft(db, episode, segments):
+    """A saved transcription draft can be edited without approving the evidence.
+
+    The first draft for a source revision remains the caption baseline; later
+    corrections use versioned subtitle edits, never a newer transcription job.
+    This does not approve evidence or mark any caption reviewed.
+    """
+    drafts = db.scalars(select(Job).where(Job.episode_id == episode.id,
+        Job.owner_id == episode.owner_id, Job.kind.in_(('subtitle_draft','analysis')),
+        Job.state == 'succeeded').order_by(Job.created_at.asc(), Job.id.asc())).all()
+    draft = next((j for j in drafts if published_revision(j) == episode.evidence_revision), None)
+    if draft is None:
+        return
+    if draft.kind == 'subtitle_draft':
+        source = db.get(Job, draft.payload.get('source_job_id'))
+        rows = (draft.result or {}).get('rows', [])
+    else:
+        # A normal completed analysis already persists all ASR checkpoints.
+        # Its published revision is newer than its input revision; use the
+        # output revision to avoid attaching stale or validation-only results.
+        source = draft
+        rows = draft_rows_from_steps(source.payload.get('steps',{}),source.payload.get('asset_ids',[]))
+    if (not source or source.state != 'succeeded' or source.owner_id != episode.owner_id
+            or source.episode_id != episode.id
+            or published_revision(source) != episode.evidence_revision):
+        return
+    if not isinstance(rows, list) or len(rows) > 1500:
+        return
+    for segment in segments:
+        segment['_dialogue'] = []
+        if segment.get('_preserve_expression'):
+            continue
+        if segment['asset_id'] not in source.payload.get('asset_ids', []):
+            continue
+        for item in rows:
+            if not isinstance(item, dict) or item.get('asset_id') != segment['asset_id']:
+                continue
+            a,b,text = item.get('start'), item.get('end'), item.get('text')
+            if (type(a) not in (int,float) or type(b) not in (int,float)
+                    or not math.isfinite(a) or not math.isfinite(b)
+                    or not segment['start']-.03 <= a < b <= segment['end']+.03
+                    or not isinstance(text,str) or not text.strip() or len(text)>500
+                    or any(ord(c)<32 for c in text)):
+                continue
+            text = display_text(text)
+            if not text:
+                continue
+            cue = hashlib.sha256(f'draft:{draft.id}:{segment["asset_id"]}:{a:.6f}:{b:.6f}:{text}'.encode()).hexdigest()[:32]
+            segment['_dialogue'].append({'start':a,'end':b,'text':text,'context':text,
+                'cue_id':cue,'alignment':'draft','source_draft':True})
+        segment['_dialogue'].sort(key=lambda row: (row['start'],row['end']))
+
+
 def review_flags(row):
     text=row['text'];flags=[]
-    if row.get('alignment')!='asr':flags.append('改字后沿用整句时间，请回听')
+    if row.get('source_draft'):
+        if not row.get('reviewed'):flags.append('自动字幕草稿，尚未核对')
+    elif row.get('alignment')!='asr':flags.append('改字后沿用整句时间，请回听')
     if len(compact(text))>28:flags.append('句子偏长')
     if len(compact(text))/max(.1,row['end']-row['start'])>7:flags.append('显示偏快')
     if re.search(r'([\u3400-\u9fff]{2,4})\1',text):flags.append('有重复词，请听原声')

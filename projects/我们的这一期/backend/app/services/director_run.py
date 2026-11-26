@@ -9,6 +9,16 @@ from . import director_guidance
 
 LIVE = ('active', 'pausing', 'paused', 'blocked', 'cancelling')
 TRANSIENT = ('MEDIA_TIMEOUT', 'INTERRUPTED')
+ORIGINAL_SCOPE = 'selected_plan_original_draft_and_local_check'
+REVISION_SCOPE = 'approved_revision_render_and_local_check'
+
+
+def scope(run):
+    return run.payload.get('scope', ORIGINAL_SCOPE)
+
+
+def _candidate(run):
+    return '修改版' if scope(run) == REVISION_SCOPE else '初稿'
 
 
 def intent(version):
@@ -25,14 +35,15 @@ def _publish(run, child=None):
     run.result = {'version_id': run.version_id, 'phase': run.payload['phase'],
         'child_state': child.state if child else None, 'retries_used': run.payload['retries_used'],
         'retry_limit': 1, 'cloud_calls_allowed': False, 'stop_at': 'preview',
-        'expires_at': run.payload['expires_at']}
+        'expires_at': run.payload['expires_at'], 'scope': scope(run)}
 
 
-def create(repo, db, version, render_job, brief_revision):
+def create(repo, db, version, render_job, brief_revision, *, approved_proposal_id=None):
     run = Job(owner_id=version.owner_id, episode_id=version.episode_id, version_id=version.id,
-        kind='director_run', state='active', stage='导演正在安排本机初稿',
+        kind='director_run', state='active', stage='导演正在制作已确认的修改版' if approved_proposal_id else '导演正在安排本机初稿',
         idempotency_key='director-run:' + render_job.id,
-        payload={'phase': 'render', 'child_id': render_job.id, 'intent': intent(version),
+        payload={'scope': REVISION_SCOPE if approved_proposal_id else ORIGINAL_SCOPE,
+            'approved_proposal_id': approved_proposal_id, 'phase': 'render', 'child_id': render_job.id, 'intent': intent(version),
             'brief_revision': brief_revision, 'retries_used': 0,
             'expires_at': time.time() + 3600, 'cloud_calls_allowed': False, 'stop_at': 'preview'})
     db.add(run); db.flush()
@@ -46,7 +57,7 @@ def validate(repo, db, run):
     version = repo.owned(db, Version, run.version_id, run.owner_id)
     episode = repo.owned(db, Episode, run.episode_id, run.owner_id)
     if version.episode_id != episode.id or intent(version) != run.payload['intent']:
-        raise DomainError('RUN_INPUT_CHANGED', '这份委托的拍法已变化，请重新选择拍法。', 409)
+        raise DomainError('RUN_INPUT_CHANGED', '这份委托的制作内容已变化，请重新确认安排。', 409)
     if time.time() >= run.payload['expires_at']:
         raise DomainError('RUN_EXPIRED', '这份制作委托已超过一小时，已停止继续派发。', 409)
     director_guidance.assert_revision(db, episode, run.payload['brief_revision'])
@@ -89,7 +100,7 @@ def control(repo, db, version, action):
                 raise DomainError('RUN_RETRY_LIMIT', '这一步无法自动重试，已有输入保留，请先核对失败原因。', 409)
         elif child.state == 'paused':
             child.state, child.stage = 'queued', '导演已继续制作'
-        run.state, run.stage, run.error = 'active', '导演继续处理这份初稿', None
+        run.state, run.stage, run.error = 'active', '导演继续处理这份' + _candidate(run), None
     elif action == 'cancel':
         if run.state in ('cancelled', 'cancelling'):
             return run
@@ -159,12 +170,12 @@ def advance(repo):
                     try:
                         child = enqueue(repo, db, version)
                         run.payload = {**run.payload, 'phase': 'technical_review', 'child_id': child.id}
-                        run.stage = '初稿已生成，正在检查画面与声音'
+                        run.stage = _candidate(run) + '已生成，正在检查画面与声音'
                     except DomainError as exc:
                         run.state, run.stage = 'blocked', '后续检查已停止，已生成的版本保留'
                         run.error = {'code': exc.code, 'message': exc.message}
                 else:
-                    run.state, run.stage = 'awaiting_user', '初稿和播放检查已完成，候选待你预览'
+                    run.state, run.stage = 'awaiting_user', _candidate(run) + '和播放检查已完成，候选待你预览'
                     repo.audit(db, run.owner_id, 'director_run_delivered', run.id)
             _publish(run, child)
 

@@ -4,7 +4,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { Dashboard } from '@/components/dashboard';
 import { MediaAccessContext } from '@/components/ui';
 import { api, AppError, uploadAsset } from '@/lib/api';
-import type { Asset, Episode } from '@/lib/types';
+import type { Asset, Episode, Version } from '@/lib/types';
 
 const router = vi.hoisted(() => ({ push: vi.fn() }));
 vi.mock('next/navigation', () => ({ useRouter: () => router }));
@@ -42,7 +42,7 @@ it('creates an idea-only episode with a bounded title and full prompt on Enter, 
   const prompt = '周末做饭，'.repeat(30) + '保留大家聊天的原声。';
   const field = screen.getByRole('textbox', { name: '这一期的想法' });
   expect(field.tagName).toBe('INPUT');
-  expect(screen.getByRole('button', { name: '开拍' })).toBeDisabled();
+  expect(screen.getByRole('button', { name: '开拍' })).toBeEnabled();
   fireEvent.change(field, { target: { value: `  ${prompt}  ` } });
   field.focus();
   await userEvent.keyboard('{Enter}');
@@ -226,4 +226,45 @@ it('keeps the latest three episodes visible and restores older episode links whe
   expect(within(recent).getAllByRole('link')).toHaveLength(4);
   await userEvent.click(screen.getByRole('button', { name: '收起，查看最近 3 期' }));
   await waitFor(() => expect(within(recent).getAllByRole('link')).toHaveLength(3));
+});
+
+it('brings a newly edited older episode forward and labels the actual preview version, including after refresh', async () => {
+  const older = { ...episode('a'.repeat(32), '旧节目新成片'), created_at: '2026-11-01T00:00:00Z' };
+  const version = (id: string, state: string, created_at: string): Version => ({
+    id: id.repeat(32), title: '成片', state, created_at, origin: 'manual', segments: [],
+    media_url: `/api/v1/versions/${id.repeat(32)}/media`, job_id: null, error: null,
+    base_version_id: null, narration_text: '', narration_approved: false, narration_ready: false,
+    packaging: 'variety_v2', evidence_revision: null,
+  });
+  const latest = version('b', 'ready', '2026-11-22T00:00:00Z');
+  // Deliberately unsorted: API order must not make an older confirmed film look current.
+  older.versions = [latest, version('c', 'confirmed', '2026-11-02T00:00:00Z')];
+  const items = [older, ...[2, 3, 4].map(n => episode(String(n).repeat(32), `节目${n}`))];
+  vi.mocked(api).mockResolvedValue({ items });
+  render(<Dashboard />);
+  const link = await screen.findByRole('link', { name: '继续制作：旧节目新成片' });
+  const region = screen.getByRole('region', { name: '最近制作' });
+  expect(within(region).getAllByRole('link')[0]).toBe(link);
+  expect(link).toHaveAttribute('href', `/episodes/${older.id}?step=preview&version=${latest.id}`);
+  expect(link).toHaveTextContent('新版待预览');
+  expect(link).not.toHaveTextContent('这版已确认');
+  latest.state = 'confirmed';
+  await userEvent.click(screen.getByRole('button', { name: '刷新节目列表' }));
+  await waitFor(() => expect(link).toHaveTextContent('这版已确认'));
+  expect(within(region).getAllByRole('link')[0]).toBe(link);
+  expect(items[0]).toBe(older);
+  expect(older.versions[0]).toBe(latest);
+  expect(posts()).toHaveLength(0);
+});
+
+
+it('opens a new materials flow on an empty shoot click without spending or sending media', async () => {
+  render(<Dashboard />);
+  await screen.findByText('第一期，从你的素材开始');
+  await userEvent.click(screen.getByRole('button', {name:'开拍'}));
+  expect(posts()).toHaveLength(1);
+  expect(posts()[0]).toEqual(['/episodes', expect.objectContaining({body:{title:'新的一期',background:''}})]);
+  expect(router.push).toHaveBeenCalledWith(`/episodes/${episode().id}?step=materials`);
+  expect(uploadAsset).not.toHaveBeenCalled();
+  expect(vi.mocked(api).mock.calls.every(([path])=>path==='/episodes')).toBe(true);
 });

@@ -3,20 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import styles from './show-atmosphere.module.css';
 
-const OPENING_SEEN_KEY = 'our-episode:opening:v1';
 const OPENING_DURATION = 2700;
-let playedWithoutStorage = false;
-
-function hasSeenOpening() {
-  try { return window.sessionStorage.getItem(OPENING_SEEN_KEY) === '1'; }
-  catch { return playedWithoutStorage; }
-}
-
-function rememberOpening() {
-  playedWithoutStorage = true;
-  try { window.sessionStorage.setItem(OPENING_SEEN_KEY, '1'); }
-  catch { /* A blocked storage area must not block entry or replay on every route. */ }
-}
 
 function Star({ className }: { className?: string }) {
   return <svg className={className} viewBox="0 0 100 100" fill="currentColor" aria-hidden="true" focusable="false"><path d="m50 0 9 32 27-18-18 27 32 9-32 9 18 27-27-18-9 32-9-32-27 18 18-27L0 50l32-9-18-27 27 18Z" /></svg>;
@@ -102,6 +89,7 @@ export function ShowOpening() {
     const dialog = dialogRef.current;
     if (!dialog) return;
     const reduced = window.matchMedia?.('(prefers-reduced-motion: reduce)');
+    let played = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let previousFocus: HTMLElement | null = null;
     let previousOverflow = '';
@@ -122,8 +110,8 @@ export function ShowOpening() {
     const start = (replay = false) => {
       // Invitation holders go straight to their own access/consent screen.
       if (window.location.pathname === '/participate' || window.location.pathname.startsWith('/watch/')) return;
-      if (dialog.open || (!replay && hasSeenOpening())) return;
-      rememberOpening();
+      if (dialog.open || (!replay && played)) return;
+      played = true;
       if (reduced?.matches) return;
       previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
       previousOverflow = document.body.style.overflow;
@@ -157,7 +145,7 @@ export function ShowOpening() {
     };
     const preference = () => { if (reduced?.matches) close(); };
     const skip = skipRef.current;
-    // Deferral avoids consuming the once-per-tab flag in StrictMode's rehearsal.
+    // The root layout persists across navigation; a document refresh replays the opening.
     const initial = setTimeout(() => start(), 0);
     skip?.addEventListener('click', close);
     dialog.addEventListener('cancel', cancel);

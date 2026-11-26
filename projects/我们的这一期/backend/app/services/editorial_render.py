@@ -98,13 +98,18 @@ def intro_frames(beat, folder, width, height):
     return folder/'%04d.png'
 
 
-def render_editorial(base:Path,output:Path,segments,temp:Path,offset=0):
+def render_editorial(base:Path,output:Path,segments,temp:Path,offset=0,layouts=None):
     plan=compile_editorial(segments,offset)
-    active=[x for x in plan if x['beat'].treatment!='none']
+    if layouts is None:
+        from .editorial_layout import prepare_layout
+        layouts=prepare_layout(base,segments,temp,offset)
+    active=[x for x in plan if x['beat'].treatment!='none' and
+            (x['beat'].layout!='adaptive' or layouts.get(x['segment'],{}).get('status')=='placed')]
     summary=[{'segment':x['segment'],'role':x['beat'].role,'treatment':x['beat'].treatment,
-              'start':round(x['start'],3),'end':round(x['end'],3)} for x in plan]
+              'start':round(x['start'],3),'end':round(x['end'],3),
+              **({'layout':layouts[x['segment']]} if x['segment'] in layouts else {})} for x in plan]
     if not active:
-        return base,{'editorial_revision':'editorial-v2-on-video','editorial_summary':summary}
+        return base,{'editorial_revision':'editorial-v3.1-vivid','editorial_summary':summary}
     info=media._inspect(base);w,h=info.width,info.height
     if output.exists() or output.is_symlink():
         raise media.MediaError('MEDIA_OUTPUT_EXISTS','目标已存在，请另存新版本。')
@@ -115,8 +120,15 @@ def render_editorial(base:Path,output:Path,segments,temp:Path,offset=0):
           '-protocol_whitelist','file,pipe','-i',str(base)]
     for i,item in enumerate(active):
         beat,start,end=item['beat'],item['start'],item['end']
-        graphic=(intro_frames(beat,temp/f'editorial-intro-{i}',w,h) if beat.treatment=='chapter'
-                 else accent_frames(beat,temp/f'editorial-accent-{i}',w,h))
+        if beat.layout=='adaptive':
+            from .editorial_layout import graphic_beat
+            from .sticker_beats import render_frames
+            layout=layouts[item['segment']]
+            graphic=render_frames(graphic_beat(beat,layout),base,temp/f'editorial-accent-{i}',w,h,
+                                  safe_bottom=layout['safe_bottom'])
+        else:
+            graphic=(intro_frames(beat,temp/f'editorial-intro-{i}',w,h) if beat.treatment=='chapter'
+                     else accent_frames(beat,temp/f'editorial-accent-{i}',w,h))
         args+=['-framerate','30','-t',str(beat.duration),'-i',str(graphic)]
         filters.append(f'[{i+1}:v]format=rgba,setpts=PTS-STARTPTS+{start:.6f}/TB[g{i}]')
         filters.append(f'[v{i}][g{i}]overlay=eof_action=pass:repeatlast=0[v{i+1}]')
@@ -127,4 +139,4 @@ def render_editorial(base:Path,output:Path,segments,temp:Path,offset=0):
     result=media.probe(output)
     if abs(result['duration']-info.duration)>.12 or (result['width'],result['height'])!=(w,h) or not result['has_audio']:
         raise media.MediaError('MEDIA_RENDER_FAILED','编导版式的时长、画幅或音轨校验失败。')
-    return output,{'editorial_revision':'editorial-v2-on-video','editorial_summary':summary}
+    return output,{'editorial_revision':'editorial-v3.1-vivid','editorial_summary':summary}

@@ -23,7 +23,7 @@ def convert_landmarks(landmarks):
         return None  # Never clamp a partially offscreen face into plausible geometry.
     x, y = min(p[0] for p in oval), min(p[1] for p in oval)
     w, h = max(p[0] for p in oval) - x, max(p[1] for p in oval) - y
-    return {'box': [x, y, w, h], 'eyes': eyes, 'mouth': mouth,
+    return {'box': [x, y, w, h], 'eyes': eyes, 'mouth': mouth, 'contour': oval, 'contour_kind': 'oval',
             'provider': 'mediapipe', 'presence_threshold': .8}
 
 

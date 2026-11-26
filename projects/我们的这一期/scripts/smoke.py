@@ -40,7 +40,7 @@ ALLOWED_MODELS['tts'].add('speech-2.8-hd')
 ALLOWED_MODELS['director_chat'] = {'deepseek-flash'}
 ALLOWED_MODELS['visual_review'] = {'deepseek-flash'}
 CALL_KINDS = {'analysis': {'vision', 'asr'}, 'directions': {'directions'},
-              'narration': {'tts'}, 'director_chat': {'director_chat'}, 'visual_review': {'visual_review'}}
+              'narration': {'tts'}, 'director_chat': {'director_chat'}, 'visual_review': {'visual_review'}, 'sequence_review': {'visual_review'}, 'audio_review': {'asr'}}
 TERMINAL = ('succeeded', 'failed')
 WAIT_SECONDS = 900
 ID = re.compile(r'[a-f0-9]{32}')

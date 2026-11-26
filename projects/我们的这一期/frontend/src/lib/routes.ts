@@ -1,7 +1,7 @@
 /** The core UI may reach only these existing API routes, never an arbitrary upstream URL. */
 export type ApiMethod = "GET" | "HEAD" | "POST" | "PUT" | "DELETE";
 export type ApiRole = "owner" | "participant" | "viewer";
-export type RouteKind = "subtitles" | "directorVoices" | "directorVoice" | "directorVoiceStatus" | "directorChat" | "directorChatAction" | "directorState" | "retention" | "status" | "auth" | "ok" | "episodes" | "episode" | "asset" | "impact" | "version" | "job" | "media"
+export type RouteKind = "finishing" | "subtitles" | "directorVoices" | "directorVoice" | "directorVoiceStatus" | "directorChat" | "directorChatAction" | "directorState" | "retention" | "status" | "auth" | "ok" | "episodes" | "episode" | "asset" | "impact" | "version" | "job" | "media"
   | "participantAuth" | "invitation" | "invitationCreated" | "invitations" | "submission" | "submissions"
   | "revision" | "objection" | "objections" | "share" | "shareCreated" | "shares" | "viewerAuth" | "viewerShare";
 export type RouteContract = { kind: RouteKind; role: ApiRole; public: boolean; upload: boolean; bodyLimit: number };
@@ -11,6 +11,8 @@ export const EVIDENCE_BODY_LIMIT = 2 * 1024 * 1024;
 export const UPLOAD_BODY_LIMIT = 1024 ** 3 + 1024 ** 2;
 export const VOICE_BODY_LIMIT = 12 * 1024 ** 2 + 65_536;
 const routes: Array<[RegExp, Partial<Record<ApiMethod, RouteKind>>]> = [
+  [new RegExp(`^/versions/${objectId}/finishing$`), { GET: "finishing", PUT: "finishing" }],
+  [new RegExp(`^/versions/${objectId}/finishing/commit$`), { POST: "version" }],
   [/^\/status$/, { GET: "status" }],
   [/^\/auth\/login$/, { POST: "auth" }],
   [/^\/auth\/me$/, { GET: "auth" }],
@@ -33,7 +35,7 @@ const routes: Array<[RegExp, Partial<Record<ApiMethod, RouteKind>>]> = [
   [new RegExp(`^/assets/${objectId}$`), { DELETE: "ok" }],
   [new RegExp(`^/assets/${objectId}/impact$`), { GET: "impact" }],
   [new RegExp(`^/assets/${objectId}/media$`), { GET: "media", HEAD: "media" }],
-  [new RegExp(`^/versions/${objectId}/(?:render|narration|review|visual-review)$`), { POST: "job" }],
+  [new RegExp(`^/versions/${objectId}/(?:render|narration|review|visual-review|audio-review|sequence-review)$`), { POST: "job" }],
   [new RegExp(`^/versions/${objectId}/director-run/(?:pause|resume|cancel)$`), { POST: "job" }],
   [new RegExp(`^/versions/${objectId}/subtitles$`), { GET: "subtitles" }],
   [new RegExp(`^/versions/${objectId}/confirm$`), { POST: "version" }],

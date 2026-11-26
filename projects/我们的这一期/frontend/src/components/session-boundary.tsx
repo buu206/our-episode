@@ -153,7 +153,7 @@ export function SessionBoundary({ children }: { children: ReactNode }) {
     </main>
     <footer className="app-footer"><span>ZAICHANG <span aria-hidden="true">✳</span></span><span>生活没有剧本，但可以有片头。</span></footer>
     {isHome && <Dialog open={accountOpen && ready && !frozen} onClose={() => setAccountOpen(false)} title="我的账号">
-      <p>你已通过邀请码进入。这台电脑上的节目和素材会保留，下次进入可以继续制作。</p>
+      <p>当前制作会话已就绪。这台电脑上的节目和素材会保留，下次进入可以继续制作。</p>
       <ModeBanner status={status} />
       {error && <Notice tone="error">{error}</Notice>}
       <div className="dialog-actions"><Button variant="ghost" onClick={() => setAccountOpen(false)}>继续开场</Button><Button busy={busy} onClick={logout} aria-label="退出发起人身份"><LogOut size={16} />退出账号</Button></div>

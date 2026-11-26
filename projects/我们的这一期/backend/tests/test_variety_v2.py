@@ -42,7 +42,7 @@ def test_three_layouts_have_entry_emphasis_and_clean_intervals(packaged):
     folder, _, _, hashes, output, result = packaged
     assert (result["width"], result["height"], result["has_audio"]) == (720, 1280, True)
     assert 6.7 < result["duration"] < 6.85
-    assert result["packaging"] == "variety_v2" and result["renderer_revision"] == "variety-v2.2"
+    assert result["packaging"] == "variety_v2" and result["renderer_revision"] == "variety-v2.3"
     assert result["cue_count"] == 3
     assert [cue["style"] for cue in result["cue_summary"]] == ["impact", "aside", "stamp"]
     # Fixed blue media: changes are the timed graphic pass, not camera movement.

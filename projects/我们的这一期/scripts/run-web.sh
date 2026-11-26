@@ -3,7 +3,7 @@ set -euo pipefail
 PRODUCT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd -- "$PRODUCT_DIR/frontend"
 case "${1:-normal}" in
-  normal) export BACKEND_URL='http://127.0.0.1:8788' BACKEND_MODE=normal; WEB_PORT=3000 ;;
+  normal) export BACKEND_URL='http://127.0.0.1:8788' BACKEND_MODE=normal LOCAL_DEMO_ENTRY="${LOCAL_DEMO_ENTRY:-1}"; WEB_PORT=3000 ;;
   demo) export BACKEND_URL='http://127.0.0.1:8790' BACKEND_MODE=demo; WEB_PORT=3001 ;;
   *) printf '%s\n' '使用 bash scripts/run-web.sh 或 bash scripts/run-web-demo.sh。' >&2; exit 1 ;;
 esac

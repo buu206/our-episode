@@ -49,6 +49,22 @@ def test_pause_queue_resume_complete_and_never_confirm(client, voiced_video_byte
     assert client.get(f"/api/v1/versions/{v['id']}/export").status_code == 409
 
 
+def test_locked_packaging_enforces_owner_and_preserves_cut_and_idempotency(client,voiced_video_bytes):
+    auth,eid,body=proposal(client,voiced_video_bytes)
+    original=request(client,f'/episodes/{eid}/direction',auth,body=body,expected=201)
+    worker(client).process_one();worker(client).process_one()
+    locked={**body,'client_id':'locked-packaging-fixture-01','keep_cut_version_id':original['id']}
+    new=request(client,f'/episodes/{eid}/direction',auth,body=locked,expected=201)
+    assert new['base_version_id']==original['id']
+    assert [(s['asset_id'],s['start'],s['end']) for s in new['segments']]==[(s['asset_id'],s['start'],s['end']) for s in original['segments']]
+    assert request(client,f'/episodes/{eid}/direction',auth,body=locked,expected=201)['id']==new['id']
+    # Referencing another account's version cannot use its source cut.
+    with client.app.state.repo.transaction() as db:db.get(Version,original['id']).owner_id='another-owner'
+    response=request(client,f'/episodes/{eid}/direction',auth,
+        body={**locked,'client_id':'locked-packaging-fixture-02'},expected=404)
+    assert response['error']['code']=='NOT_FOUND'
+
+
 @pytest.mark.parametrize('action,expected', [('pause', 'paused'), ('cancel', 'cancelled')])
 def test_inflight_action_finishes_current_render_without_starting_review(client, voiced_video_bytes, monkeypatch, action, expected):
     auth, eid, v = create(client, voiced_video_bytes)

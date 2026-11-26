@@ -8,8 +8,9 @@ from ..models import Budget, Episode, Job, Version, uid
 from ..repository import DomainError
 from . import director_guidance
 
-MAX_TURNS = 50
-CONTEXT_BYTES = 16000
+MAX_TURNS = 200  # Bounded stored dialogue; only the latest four turns enter model context.
+CHAT_LIMIT_MESSAGE = f'本期导演对话已达到{MAX_TURNS}轮，已有记录完整保留。'
+CONTEXT_BYTES = 23000  # Fits up to four observation windows plus a normal user question.
 
 
 def _hash(value):
@@ -79,7 +80,7 @@ def require_ready(services, context=None):
         raise DomainError('DIRECTOR_CHAT_UNAVAILABLE', reason, 409)
 
 
-def _context(repo, db, episode, rows, text, version_id, step):
+def _context(repo, db, episode, rows, text, version_id, step, audio_focus_cue_id=None):
     saved, assets, version = snapshot(repo, db, episode, version_id)
     guidance = director_guidance.state(db, episode)
     confirmed = (episode.evidence_confirmed_revision == episode.evidence_revision
@@ -90,6 +91,9 @@ def _context(repo, db, episode, rows, text, version_id, step):
         available.append('revise_directions')
     if version and version.packaging in ('standard', 'variety', 'variety_v2'):
         available.append('revise_narration')
+    from .director_cut import eligible
+    if eligible(db, version):
+        available.append('revise_cut')
     history = []
     for row in rows[-4:]:
         history.append({'role': 'user', 'text': row.question})
@@ -104,22 +108,59 @@ def _context(repo, db, episode, rows, text, version_id, step):
         'confirmed_evidence': evidence, 'current_version': _version_data(version),
         'history': history, 'history_omitted_count': omitted, 'question': text,
         'step': step, 'available_actions': available}
+    from .sequence_review import capability
+    context['sequence_review_available'] = capability(repo, db, version)
+    if context['sequence_review_available']:
+        available.append('review_sequence')
     from .render_review import context as review_context
     context['output_check'] = review_context(repo, db, version)
     from .visual_review import context as visual_context
     context['visual_check'] = visual_context(repo, db, version)
-    from .director_run import find as find_run
+    from .sequence_review import context as sequence_context
+    sequence = sequence_context(repo, db, version)
+    from .editorial_timing import context as editorial_context
+    editorial = editorial_context(version, sequence)
+    if sequence:
+        context['sequence_check'] = sequence
+        context['visual_check'] = None  # Prefer the scoped sequence over redundant broad screenshots.
+    if sequence or editorial:
+        # Preserve user intent, but don't feed obsolete assistant judgements back
+        # as a precedent after fresh observations. Durable history is untouched.
+        fresh_history = []
+        for row in rows[-4:]:
+            fresh_history.append({'role': 'user', 'text': row.question})
+            if row.reply is not None:
+                previous = getattr(row, 'context', None) or {}
+                if previous.get('sequence_check') == sequence and previous.get('editorial_timing') == editorial:
+                    fresh_history.append({'role': 'assistant', 'text': row.reply})
+                else:
+                    context['history_omitted_count'] += 1
+        history[:] = fresh_history
+
+    from .story_evidence import context as story_context
+    context['story_evidence'] = story_context(episode, version)
+    context['editorial_timing'] = editorial
+    from .audio_review import context as audio_context
+    context['audio_check'] = audio_context(repo, db, version, audio_focus_cue_id)
+    if audio_focus_cue_id and not context['audio_check']:
+        raise DomainError('AUDIO_FOCUS_STALE', '当前版本没有这句的有效检查，请回到预览重新选择。', 409)
+    if context['audio_check'] and context['audio_check']['findings']:
+        available.append('revise_subtitles')
+    from .director_run import find as find_run, scope as run_scope
     run = find_run(db, version) if version else None
     context['local_delegation'] = ({'state': run.state, 'stage': run.stage,
-        'scope': 'selected_plan_original_draft_and_local_check', 'cloud_calls_allowed': False,
+        'scope': run_scope(run), 'cloud_calls_allowed': False,
         'stop_at': 'unconfirmed_preview', 'error': run.error} if run else None)
+    from .story_events import derive as derive_events
+    context['story_event_catalog'] = derive_events(context)
     # Only whole older conversation messages leave the input window. Durable
     # history, the current question and confirmed source evidence stay intact.
-    from .director_chat_model import input_fits
+    from .director_chat_model import input_fits, prepare_chat_input
     from .director import DirectorError
     def fits():
         try:
-            return len(json.dumps(context, ensure_ascii=False).encode()) <= CONTEXT_BYTES and input_fits(context)
+            wire, _ = prepare_chat_input(context)
+            return len(wire.encode()) <= CONTEXT_BYTES and input_fits(context)
         except DirectorError as exc:
             raise DomainError(exc.code, exc.message, 422) from None
     while not fits() and history:
@@ -130,13 +171,14 @@ def _context(repo, db, episode, rows, text, version_id, step):
     return saved, context
 
 
-def enqueue(repo, db, episode, services, *, client_id, text, version_id=None, step='materials', confirm_send=False):
+def enqueue(repo, db, episode, services, *, client_id, text, version_id=None, step='materials', confirm_send=False, audio_focus_cue_id=None):
     if not confirm_send:
         raise DomainError('CONFIRM_REQUIRED', '请确认把这句话及本期相关文字发送给导演模型。', 409)
     text = text.strip()
     if not text or len(text) > 2000 or not client_id.strip():
         raise DomainError('INVALID_CHAT_MESSAGE', '请填写1–2000字的问题。', 422)
-    request_hash = _hash({'text': text, 'version_id': version_id, 'step': step})
+    request_hash = _hash({'text': text, 'version_id': version_id, 'step': step} | (
+        {'audio_focus_cue_id': audio_focus_cue_id} if audio_focus_cue_id else {}))
     rows = _turns(db, episode)
     previous = next((r for r in rows if r.client_id == client_id), None)
     if previous:
@@ -145,7 +187,7 @@ def enqueue(repo, db, episode, services, *, client_id, text, version_id=None, st
         return repo.owned(db, Job, previous.job_id, episode.owner_id)
     require_ready(services, {'episode': {'id': episode.id}})
     if len(rows) >= MAX_TURNS:
-        raise DomainError('DIRECTOR_CHAT_FULL', '本期导演对话已达到50轮，已有记录完整保留。', 409)
+        raise DomainError('DIRECTOR_CHAT_FULL', CHAT_LIMIT_MESSAGE, 409)
     if any(db.get(Job, row.job_id).state in ('queued', 'running') for row in rows):
         raise DomainError('DIRECTOR_CHAT_BUSY', '导演正在回复上一句话，请稍后再发。', 409)
     pending = db.scalars(select(Budget).where(Budget.episode_id == episode.id,
@@ -153,11 +195,17 @@ def enqueue(repo, db, episode, services, *, client_id, text, version_id=None, st
         (Budget.state.in_(('reserved', 'unknown'))) | ((Budget.state == 'settled') & Budget.cost.is_(None)))).first()
     if pending:
         raise DomainError('COST_UNKNOWN', '本期尚有费用预留未核实，先等待处理或核对账单。', 409)
-    saved, context = _context(repo, db, episode, rows, text, version_id, step)
+    saved, context = _context(repo, db, episode, rows, text, version_id, step, audio_focus_cue_id)
     turn_id = uid()
     job = Job(owner_id=episode.owner_id, episode_id=episode.id, kind='director_chat',
         idempotency_key='director_chat:' + turn_id,
         payload={'turn_id': turn_id, 'steps': {}})
+    if 'revise_cut' in context['available_actions']:
+        from .director_cut import binding
+        job.payload = {**job.payload, 'cut_binding': binding(repo, db, repo.owned(db, Version, version_id, episode.owner_id))}
+    if 'review_sequence' in context['available_actions']:
+        from .sequence_review import binding
+        job.payload = {**job.payload, 'sequence_binding': binding(repo, db, repo.owned(db, Version, version_id, episode.owner_id))}
     db.add(job); db.flush()
     db.add(DirectorChatTurn(id=turn_id, episode_id=episode.id, owner_id=episode.owner_id,
         client_id=client_id, request_hash=request_hash, question=text, reply=None,
@@ -168,6 +216,14 @@ def enqueue(repo, db, episode, services, *, client_id, text, version_id=None, st
     return job
 
 
+
+def require_sequence(repo, db, version, saved_context):
+    if saved_context.get('sequence_check'):
+        from .sequence_review import context as sequence_context
+        if sequence_context(repo, db, version) != saved_context['sequence_check']:
+            raise DomainError('SEQUENCE_REVIEW_STALE', '过程观察已变化，请按新结果重新讨论。', 409)
+
+
 def validate_job(repo, db, job):
     episode = repo.owned(db, Episode, job.episode_id, job.owner_id)
     row = repo.owned(db, DirectorChatTurn, job.payload.get('turn_id'), job.owner_id)
@@ -175,7 +231,22 @@ def validate_job(repo, db, job):
         raise DomainError('DIRECTOR_CONTEXT_CHANGED', '对话任务已失效。', 409)
     if _turns(db, episode)[-1].id != row.id:
         raise DomainError('DIRECTOR_CONTEXT_CHANGED', '已经开始新的对话，请在当前会话继续。', 409)
-    assets, _ = require_snapshot(repo, db, episode, row.snapshot)
+    assets, version = require_snapshot(repo, db, episode, row.snapshot)
+    require_sequence(repo, db, version, row.context)
+    if 'editorial_timing' in row.context:
+        from .editorial_timing import context as editorial_context
+        if editorial_context(version, row.context.get('sequence_check')) != row.context['editorial_timing']:
+            raise DomainError('EDITORIAL_TIMING_STALE', '花字时间依据已变化，请按当前版本重新讨论。', 409)
+    if 'review_sequence' in row.context.get('available_actions', []):
+        from .sequence_review import require_binding
+        require_binding(repo, db, version, job.payload.get('sequence_binding'))
+    if 'revise_subtitles' in row.context.get('available_actions', []):
+        from .audio_review import context as audio_context
+        if audio_context(repo, db, version, (row.context.get('audio_check') or {}).get('focus_cue_id')) != row.context.get('audio_check'):
+            raise DomainError('SUBTITLE_PROPOSAL_STALE', '对白检查已变化，未按过期结果继续建议。', 409)
+    if 'revise_cut' in row.context.get('available_actions', []):
+        from .director_cut import require_binding
+        require_binding(repo, db, version, job.payload.get('cut_binding'))
     return episode, assets
 
 
@@ -193,17 +264,45 @@ def state(repo, db, episode, services):
             pending = job.id
         if row.proposal:
             status = row.proposal['status']
+            cut_description = None
             if status == 'pending':
                 try:
-                    require_snapshot(repo, db, episode, row.snapshot)
+                    _, current_version = require_snapshot(repo, db, episode, row.snapshot)
+                    require_sequence(repo, db, current_version, row.context)
+                    if row.proposal['kind'] == 'review_sequence':
+                        from .sequence_review import require_binding
+                        require_binding(repo, db, current_version, row.proposal.get('sequence_binding'))
+                    if row.proposal['kind'] == 'revise_cut':
+                        from .director_cut import resolve
+                        selected, _ = resolve(repo, db, current_version, row.proposal['selections'], row.proposal['cut_binding'], row.context)
+                        from .revision_review import describe_cut
+                        cut_description = describe_cut(current_version.segments, selected, episode.evidence)
+                    if row.proposal['kind'] == 'revise_subtitles':
+                        from .director_subtitles import resolve
+                        resolve(repo, db, current_version, row.context, row.proposal['corrections'], row.proposal['audio_snapshot'])
                 except DomainError:
                     status = 'stale'
             item = {key: row.proposal[key] for key in
-                    ('kind', 'title', 'explanation', 'requirement', 'narration_text', 'target_step')
+                    ('kind', 'title', 'explanation', 'requirement', 'narration_text', 'target_step', 'subtitle_changes', 'cut_changes', 'before_seconds', 'after_seconds', 'start', 'end')
                     if key in row.proposal}
+            if row.proposal['kind'] in ('revise_subtitles', 'revise_cut'):
+                item['base_version_id'] = row.snapshot['version_id']
+            if cut_description is not None and status == 'pending':
+                item['explanation'] = cut_description[0]
+                if row.reply is not None:
+                    messages[-1]['text'] = cut_description[1]
+            if row.proposal['kind'] == 'review_sequence' and status == 'applied':
+                from .sequence_review import proposal_status
+                try:
+                    version = repo.owned(db, Version, row.snapshot['version_id'], episode.owner_id)
+                    item.update(proposal_status(repo, db, version, row.proposal))
+                except DomainError:
+                    item.update(review_state='stale', review_summary='此版本已不可用。')
             proposals.append({**item, 'id': row.id, 'message_id': row.id + '-assistant', 'status': status})
     last = db.get(Job, rows[-1].job_id) if rows else None
     allowed, reason = ready(services, {'episode': {'id': episode.id}})
+    if len(rows) >= MAX_TURNS:
+        allowed, reason = False, CHAT_LIMIT_MESSAGE
     return {'messages': messages, 'proposals': proposals, 'pending_job_id': pending,
             'last_job_id': last.id if last else None, 'last_error': last.error if last else None,
             'can_chat': allowed, 'reason': reason, 'mode': 'cloud' if services.is_real else 'demo'}
@@ -234,9 +333,53 @@ def run(pipeline, job_id):
         job = db.get(Job, job_id)
         validate_job(repo, db, job)
         turn = db.get(DirectorChatTurn, job.payload['turn_id'])
+        suggestion_check = 'not_evaluated'
+        action = data.get('action')
+        event_review = None
+        if action and action['kind'] == 'revise_cut' and action.get('event_decisions'):
+            from .story_events import compile_decisions
+            selections, event_review = compile_decisions(context, action['event_decisions'])
+            action.pop('event_decisions')
+            action['selections'] = selections
+        if action and action['kind'] == 'review_sequence' and any(
+                row['window'] == {k: action[k] for k in ('start', 'end')}
+                for row in (context.get('sequence_check') or {}).get('windows', [])):
+            # Repeating the same valid sampling cannot fill a continuous-motion
+            # gap. Publish a clearly identified local failure, not a paid card
+            # or the unsupported model claim that we have not looked here.
+            suggestion_check = 'duplicate_review_rejected'
+            data = {'reply': '这条建议没有通过检查：它让我重复查看已经观察过的同一段，不能补充新的依据。\n\n当前还不能据此确定剪点，原片先保留。这次没有修改，也没有再次发起动作观察。'}
+            repo.audit(db, job.owner_id, 'director_suggestion_rejected', turn.id,
+                       reason=suggestion_check)
         turn.reply = data['reply']
         turn.proposal = {**data['action'], 'status': 'pending'} if data.get('action') else None
-        pipeline.finish(db, job, {'message_id': turn.id + '-assistant'}, '导演已回复，修改建议需你确认')
+        if turn.proposal and turn.proposal['kind'] == 'review_sequence':
+            from .sequence_review import snapshot as review_snapshot, require_binding
+            version = repo.owned(db, Version, turn.snapshot['version_id'], job.owner_id)
+            bound = job.payload['sequence_binding']
+            require_binding(repo, db, version, bound)
+            review_snapshot(repo, db, version, {k: turn.proposal[k] for k in ('start', 'end')})
+            turn.proposal = {**turn.proposal, 'sequence_binding': bound}
+        if turn.proposal and turn.proposal['kind'] == 'revise_subtitles':
+            from .director_subtitles import resolve
+            version = repo.owned(db, Version, turn.snapshot['version_id'], job.owner_id)
+            _, changes, bound = resolve(repo, db, version, turn.context, turn.proposal['corrections'])
+            turn.proposal = {**turn.proposal, 'subtitle_changes': changes, 'audio_snapshot': bound}
+        if turn.proposal and turn.proposal['kind'] == 'revise_cut':
+            from .director_cut import resolve
+            version = repo.owned(db, Version, turn.snapshot['version_id'], job.owner_id)
+            selected, public = resolve(repo, db, version, turn.proposal['selections'], job.payload['cut_binding'], turn.context)
+            from .revision_review import describe_cut
+            episode = repo.owned(db, Episode, version.episode_id, job.owner_id)
+            explanation, turn.reply, cut_review = describe_cut(version.segments, selected, episode.evidence)
+            turn.proposal = {**turn.proposal, **public, 'explanation': explanation,
+                             'cut_review': cut_review, 'cut_binding': job.payload['cut_binding'],
+                             **({'event_review': event_review} if event_review else {})}
+            suggestion_check = 'cut_description_from_plan'
+        pipeline.finish(db, job, {'message_id': turn.id + '-assistant',
+            'suggestion_check': suggestion_check},
+            '重复观察建议已拦截，未改片' if suggestion_check == 'duplicate_review_rejected'
+            else '导演已回复，修改建议需你确认')
 
 
 def scoped_direction_context(repo, db, job):
@@ -272,6 +415,7 @@ def apply(repo, db, episode, proposal_id, services, enqueue_directions, confirm=
     if proposal['status'] == 'applied':
         return proposal['result']
     _, version = require_snapshot(repo, db, episode, turn.snapshot)
+    require_sequence(repo, db, version, turn.context)
     kind = proposal['kind']
     result = {'ok': True}
     if kind == 'navigate':
@@ -292,6 +436,17 @@ def apply(repo, db, episode, proposal_id, services, enqueue_directions, confirm=
         job = enqueue_directions(db, repo, episode, 'directions')
         job.payload = {**job.payload, 'chat_proposal_id': turn.id}
         result.update(next_step='direction', job_id=job.id)
+    elif kind == 'review_sequence':
+        from .sequence_review import enqueue as enqueue_review, require_binding
+        require_binding(repo, db, version, proposal.get('sequence_binding'))
+        job = enqueue_review(repo, db, version, services, {k: proposal[k] for k in ('start', 'end')})
+        result.update(job_id=job.id, version_id=version.id)
+    elif kind == 'revise_cut':
+        from .director_cut import create_candidate
+        result = create_candidate(repo, db, episode, version, turn)
+    elif kind == 'revise_subtitles':
+        from .director_subtitles import create_candidate
+        result = create_candidate(repo, db, episode, version, turn)
     elif kind == 'revise_narration':
         if not version or version.packaging not in ('standard', 'variety', 'variety_v2'):
             raise DomainError('VERSION_UNAVAILABLE', '当前版本不能直接使用旁白，请先选择适合的版本。', 409)

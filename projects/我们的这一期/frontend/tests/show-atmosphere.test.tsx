@@ -55,19 +55,21 @@ describe('opening interaction boundary', () => {
     expect(alreadyInert.inert).toBe(true);
     expect(background).toHaveFocus();
     expect(document.body.style.overflow).not.toBe('hidden');
-    expect(sessionStorage.getItem('our-episode:opening:v1')).toBe('1');
+    expect(sessionStorage.getItem('our-episode:opening:v1')).toBeNull();
   });
 
-  it('finishes without interaction, skips subsequent mounts, and permits explicit replay with Escape', () => {
+  it('finishes automatically and replays on a fresh document mount even with an old session flag', () => {
     const first = render(<ShowOpening />);
     begin();
     expect(first.container.querySelector('dialog')).toHaveAttribute('open');
     act(() => { vi.advanceTimersByTime(2700); });
     expect(first.container.querySelector('dialog')).not.toHaveAttribute('open');
     first.unmount();
+    sessionStorage.setItem('our-episode:opening:v1', '1');
     const next = render(<ShowOpening />);
     begin();
-    expect(next.container.querySelector('dialog')).not.toHaveAttribute('open');
+    expect(next.container.querySelector('dialog')).toHaveAttribute('open');
+    fireEvent.keyDown(document, { key: 'Escape' });
     replay();
     expect(next.container.querySelector('dialog')).toHaveAttribute('open');
     fireEvent.keyDown(document, { key: 'Escape' });
@@ -86,7 +88,7 @@ describe('opening interaction boundary', () => {
     expect(view.container.querySelector('dialog')).not.toHaveAttribute('open');
   });
 
-  it('cannot deadlock or replay on remount when session storage is unavailable', () => {
+  it('replays on a new mount without relying on session storage', () => {
     vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new DOMException('blocked', 'SecurityError'); });
     vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new DOMException('blocked', 'SecurityError'); });
     const first = render(<ShowOpening />);
@@ -96,7 +98,8 @@ describe('opening interaction boundary', () => {
     first.unmount();
     const next = render(<ShowOpening />);
     begin();
-    expect(next.container.querySelector('dialog')).not.toHaveAttribute('open');
+    expect(next.container.querySelector('dialog')).toHaveAttribute('open');
+    fireEvent.click(screen.getByRole('button', { name: '跳过开场' }));
     expect(document.body.style.overflow).not.toBe('hidden');
   });
 

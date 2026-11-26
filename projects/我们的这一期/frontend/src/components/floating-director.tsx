@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { ArrowRight, ArrowUp, ChevronDown, Clock3, LoaderCircle, Minus, RefreshCw, Repeat2, X } from "lucide-react";
+import { Button, Dialog, MediaPlayer } from "./ui";
 import { DirectorOrb } from "./director-orb";
 import { DirectorVoice } from "./director-voice";
 import { DirectorReply } from "./director-reply";
@@ -11,7 +12,9 @@ import type { Episode, Episodes, Job, Status } from "@/lib/types";
 import type { DirectorChatActionResult, DirectorChatContext, DirectorChatProposal, DirectorChatState } from "@/lib/director-chat";
 
 type SendRequest = DirectorChatContext & { client_id: string; text: string; confirm_send: true };
-type UnsentDraft = { text: string; request?: SendRequest };
+type ReviewFocus = { versionId: string; cueId: string; label: string };
+type ReviewRequest = ReviewFocus & { id: string };
+type UnsentDraft = { text: string; request?: SendRequest; reviewFocus?: ReviewFocus };
 type Memory = { owner: string; open: boolean; episodeId: string; drafts: Map<string, UnsentDraft> };
 let memory: Memory | null = null;
 
@@ -58,6 +61,8 @@ function DirectorWidget({ ownerId, status, allowed }: FloatingDirectorProps) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [utility, setUtility] = useState<"" | "episodes" | "voices">("");
   const [feedbackCue, setFeedbackCue] = useState(0);
+  const [reviewRequest, setReviewRequest] = useState<ReviewRequest | null>(null);
+  const consumeReview = useCallback(() => setReviewRequest(null), []);
   const launcher = useRef<HTMLButtonElement>(null);
   const closeButton = useRef<HTMLButtonElement>(null);
   const panel = useRef<HTMLElement>(null);
@@ -70,6 +75,17 @@ function DirectorWidget({ ownerId, status, allowed }: FloatingDirectorProps) {
   const routeEpisode = episodeFromPath(pathname);
   const episodeId = routeEpisode || chosenId;
 
+  useEffect(() => {
+    const review = (event: Event) => {
+      const value = (event as CustomEvent<ReviewFocus>).detail;
+      if (!allowed || !routeEpisode || !value || value.versionId !== routeContext(window.location.pathname).version_id
+          || !/^[a-f0-9]{32}$/.test(value.cueId) || typeof value.label !== "string" || value.label.length > 80) return;
+      setReviewRequest({...value,id:crypto.randomUUID()});
+      setOpen(true); setMenuOpen(false); setUtility("");
+    };
+    window.addEventListener("director:review-cue", review);
+    return () => window.removeEventListener("director:review-cue", review);
+  }, [allowed, routeEpisode]);
   useEffect(() => {
     const update = () => setContext(routeContext(window.location.pathname));
     update();
@@ -202,7 +218,7 @@ function DirectorWidget({ ownerId, status, allowed }: FloatingDirectorProps) {
       {listError && <div className="director-chat-notice" role="alert">{listError}<button type="button" onClick={() => setRefreshTick(value => value + 1)} disabled={listing}>刷新节目列表</button></div>}
       {episodeId ? <div key={`${ownerId}:${episodeId}`} className="director-mode-body" inert={utility === "episodes"}>
         <DirectorConversation ownerId={ownerId} episodeId={episodeId} active={visible && utility !== "episodes"} context={context}
-          budget={selected?.budget} onNavigate={navigate} feedbackCue={feedbackCue}
+          budget={selected?.budget} onNavigate={navigate} feedbackCue={feedbackCue} reviewRequest={reviewRequest} onReviewHandled={consumeReview}
           historyOpen={visible && utility === "voices"} onHistoryClose={closeUtility} />
       </div> : <div className="director-chat-start" inert={!!utility}>
         {listing ? <p role="status">正在找回你的节目…</p> : <><h3>这一期，先聊个主题</h3><p>选一期已有节目，或说个主题新开一期。</p>
@@ -238,8 +254,8 @@ function DirectorWidget({ ownerId, status, allowed }: FloatingDirectorProps) {
   </div>;
 }
 
-type ConversationProps = { ownerId: string; episodeId: string; active: boolean; context: DirectorChatContext; budget?: Episode["budget"]; onNavigate: (result: DirectorChatActionResult) => void; feedbackCue: number; historyOpen: boolean; onHistoryClose: () => void };
-function DirectorConversation({ ownerId, episodeId, active, context, budget, onNavigate, feedbackCue, historyOpen, onHistoryClose }: ConversationProps) {
+type ConversationProps = { ownerId: string; episodeId: string; active: boolean; context: DirectorChatContext; budget?: Episode["budget"]; onNavigate: (result: DirectorChatActionResult) => void; feedbackCue: number; reviewRequest: ReviewRequest | null; onReviewHandled: () => void; historyOpen: boolean; onHistoryClose: () => void };
+function DirectorConversation({ ownerId, episodeId, active, context, budget, onNavigate, feedbackCue, reviewRequest, onReviewHandled, historyOpen, onHistoryClose }: ConversationProps) {
   const [text, setText] = useState(() => memoryFor(ownerId).drafts.get(episodeId)?.text || "");
   const [state, setState] = useState<DirectorChatState | null>(null);
   const [loading, setLoading] = useState(false);
@@ -247,6 +263,8 @@ function DirectorConversation({ ownerId, episodeId, active, context, budget, onN
   const [actionError, setActionError] = useState("");
   const [busy, setBusy] = useState("");
   const [voiceBusy, setVoiceBusy] = useState(false);
+  const [reviewFocus, setReviewFocus] = useState<ReviewFocus | undefined>(() => memoryFor(ownerId).drafts.get(episodeId)?.reviewFocus);
+  const seenReview = useRef<string | null>(null);
   const [hasRequest, setHasRequest] = useState(() => !!memoryFor(ownerId).drafts.get(episodeId)?.request);
   const request = useRef<SendRequest | undefined>(memoryFor(ownerId).drafts.get(episodeId)?.request);
   const working = useRef(false);
@@ -274,7 +292,7 @@ function DirectorConversation({ ownerId, episodeId, active, context, budget, onN
         const draft = memoryFor(ownerId).drafts.get(episodeId)?.text || "";
         const retained = draft.trim() === sent.text ? "" : draft;
         rememberDraft(ownerId, episodeId, { text: retained }); request.current = undefined; setHasRequest(false);
-        setText(retained); setActionError("");
+        setText(retained); setReviewFocus(undefined); setActionError("");
       }
     } catch (error) {
       if (alive.current && generation === readGeneration.current && !controller.signal.aborted) setReadError(errorText(error));
@@ -282,7 +300,7 @@ function DirectorConversation({ ownerId, episodeId, active, context, budget, onN
   }, [path, ownerId, episodeId]);
   useEffect(() => { alive.current = true; return () => { alive.current = false; invalidateRead(); }; }, [invalidateRead]);
   useEffect(() => {
-    const clear = () => { readGeneration.current++; readController.current?.abort(); request.current = undefined; setHasRequest(false); setState(null); setText(""); setReadError(""); setActionError(""); };
+    const clear = () => { readGeneration.current++; readController.current?.abort(); request.current = undefined; setHasRequest(false); setState(null); setText(""); setReviewFocus(undefined); setReadError(""); setActionError(""); };
     window.addEventListener("episode:auth-expired", clear); window.addEventListener("director:reset", clear);
     return () => { window.removeEventListener("episode:auth-expired", clear); window.removeEventListener("director:reset", clear); };
   }, []);
@@ -295,11 +313,12 @@ function DirectorConversation({ ownerId, episodeId, active, context, budget, onN
     window.addEventListener("director:updated", update);
     return () => { current = false; enabled.current = false; window.removeEventListener("director:updated", update); invalidateRead(); };
   }, [active, load, episodeId, invalidateRead]);
+  const reviewing = !!state?.proposals.some(p => p.kind === "review_sequence" && ["queued", "running"].includes(p.review_state ?? ""));
   useEffect(() => {
-    if (!active || !state?.pending_job_id || readError) return;
+    if (!active || (!state?.pending_job_id && !reviewing) || readError) return;
     const timer = window.setInterval(() => { void load(); }, 1500);
     return () => window.clearInterval(timer);
-  }, [active, state?.pending_job_id, readError, load]);
+  }, [active, state?.pending_job_id, reviewing, readError, load]);
   useEffect(() => { if (active && history.current) history.current.scrollTop = history.current.scrollHeight; }, [active, state?.messages.length]);
   useEffect(() => {
     if (!text.trim()) return;
@@ -313,7 +332,7 @@ function DirectorConversation({ ownerId, episodeId, active, context, budget, onN
     if (draft?.request) return false;
     const combined = draft?.text.trim() ? draft.text.trim() + "\n" + value : value;
     if (Array.from(combined).length > 2000) return false;
-    rememberDraft(ownerId, episodeId, { text: combined });
+    rememberDraft(ownerId, episodeId, { text: combined, reviewFocus: draft?.reviewFocus });
     setText(combined); setActionError(""); input.current?.focus();
     return true;
   }, [ownerId, episodeId]);
@@ -325,6 +344,22 @@ function DirectorConversation({ ownerId, episodeId, active, context, budget, onN
       if (!appendTranscript("这版有哪些地方可以改得更好？")) setActionError("先核对上一条发送结果，再补充想法。");
     });
   }, [feedbackCue, appendTranscript]);
+  useEffect(() => {
+    if (!active || !reviewRequest || seenReview.current === reviewRequest.id) return;
+    seenReview.current = reviewRequest.id;
+    queueMicrotask(() => {
+      onReviewHandled();
+      if (!alive.current || !enabled.current || reviewRequest.versionId !== context.version_id) return;
+      const draft = memoryFor(ownerId).drafts.get(episodeId);
+      if (working.current || request.current || draft?.text.trim()) {
+        setActionError("输入框已有内容，先发送或清空，再点「让导演看这句」。"); return;
+      }
+      const focus = {versionId:reviewRequest.versionId,cueId:reviewRequest.cueId,label:reviewRequest.label};
+      const question = "帮我看看这句字幕，有必要改吗？先给建议，不直接改片。";
+      rememberDraft(ownerId,episodeId,{text:question,reviewFocus:focus});
+      setReviewFocus(focus); setText(question); setActionError(""); input.current?.focus();
+    });
+  }, [active, reviewRequest, context.version_id, ownerId, episodeId, onReviewHandled]);
   useEffect(() => {
     const element = input.current;
     if (!element) return;
@@ -339,18 +374,20 @@ function DirectorConversation({ ownerId, episodeId, active, context, budget, onN
   function edit(value: string) {
     if (working.current || request.current) return;
     setText(value); setActionError("");
-    rememberDraft(ownerId, episodeId, { text: value, request: request.current });
+    rememberDraft(ownerId, episodeId, { text: value, request: request.current, reviewFocus: value.trim() ? reviewFocus : undefined });
+    if (!value.trim()) setReviewFocus(undefined);
   }
   const pending = !!state?.pending_job_id;
-  const blocked = !active || !!busy || voiceBusy || pending || !!readError;
+  const blocked = !active || !!busy || voiceBusy || pending || reviewing || !!readError;
   async function send(event: FormEvent) {
     event.preventDefault();
     if (working.current || blocked || !state?.can_chat || !text.trim() || Array.from(text).length > 2000) return;
+    if (reviewFocus && reviewFocus.versionId !== context.version_id && !request.current) { setActionError("已切换版本，请清空这条提问后在当前版本重新选择字幕。"); return; }
     const submitted = text.trim();
-    if (!request.current || request.current.text !== submitted) request.current = { ...context, client_id: crypto.randomUUID(), text: submitted, confirm_send: true };
+    if (!request.current || request.current.text !== submitted) request.current = { ...context, ...(reviewFocus ? {audio_focus_cue_id:reviewFocus.cueId} : {}), client_id: crypto.randomUUID(), text: submitted, confirm_send: true };
     const payload = request.current;
     setHasRequest(true);
-    rememberDraft(ownerId, episodeId, { text, request: payload });
+    rememberDraft(ownerId, episodeId, { text, request: payload, reviewFocus });
     working.current = true; setBusy("send"); setActionError("");
     try {
       const job = await api<Job>(path, { method: "POST", body: payload });
@@ -363,12 +400,12 @@ function DirectorConversation({ ownerId, episodeId, active, context, budget, onN
       request.current = undefined;
       if (!alive.current) return;
       setHasRequest(false);
-      setText(retained); setState(previous => previous ? { ...previous, pending_job_id: ["queued", "running"].includes(job.state) ? job.id : null, last_job_id: job.id, last_error: job.error } : previous);
+      setText(retained); setReviewFocus(undefined); setState(previous => previous ? { ...previous, pending_job_id: ["queued", "running"].includes(job.state) ? job.id : null, last_job_id: job.id, last_error: job.error } : previous);
       await load(); input.current?.focus();
     } catch (error) {
       if (!alive.current) return;
       setActionError(errorText(error));
-      if (!(error instanceof AppError && error.uncertain)) { request.current = undefined; setHasRequest(false); rememberDraft(ownerId, episodeId, { text }); }
+      if (!(error instanceof AppError && error.uncertain)) { request.current = undefined; setHasRequest(false); rememberDraft(ownerId, episodeId, { text, reviewFocus }); }
       await load();
     } finally { working.current = false; if (alive.current) setBusy(""); }
   }
@@ -387,11 +424,11 @@ function DirectorConversation({ ownerId, episodeId, active, context, budget, onN
       if (!alive.current) return;
       await load();
       window.dispatchEvent(new CustomEvent("director:updated", { detail: { episodeId } }));
-      onNavigate(result);
+      if (proposal.kind !== "review_sequence") onNavigate(result);
     } catch (error) { if (alive.current) setActionError(errorText(error)); await load(); }
     finally { working.current = false; if (alive.current) setBusy(""); }
   }
-  const labels: Record<DirectorChatProposal["kind"], string> = { revise_directions: "确认要求并生成新方案", revise_narration: "确认文案，另存旁白草案", navigate: "去看看" };
+  const labels: Record<DirectorChatProposal["kind"], string> = { revise_directions: "确认要求并生成新方案", revise_narration: "确认文案，另存旁白草案", revise_subtitles: "确认改字并生成新版", revise_cut: "按这个剪法生成新版", review_sequence: "查看这段动作", navigate: "去看看" };
   const cost = `本期上限${budget?.limit ?? 3}元，累计${budget?.total_limit ?? 30}元，含修改和重试。`;
   return <div className="director-conversation-body" aria-busy={loading || !!busy || pending}>
     <div ref={history} className={`director-chat-history${state && !state.messages.length ? " empty" : ""}`} aria-label="导演对话记录" inert={historyOpen}>
@@ -403,12 +440,19 @@ function DirectorConversation({ ownerId, episodeId, active, context, budget, onN
         <span className="director-chat-speaker">{message.role === "user" ? "你" : message.source === "demo" ? "演示回复" : "AI 导演"}</span>
         {message.role === "assistant" ? <DirectorReply text={message.text} /> : <p>{message.text}</p>}
         {state.proposals.filter(proposal => proposal.message_id === message.id).map(proposal => <section className="director-action-card" key={proposal.id} aria-label={`导演建议：${proposal.title}`}>
-          <span className="director-action-label">{proposal.kind === "navigate" ? "下一步" : "等你确认，再动手"}</span><h3>{proposal.title}</h3><p>{proposal.explanation}</p>
+          <span className="director-action-label">{proposal.kind === "review_sequence" && proposal.status === "applied" ? "动作观察" : proposal.kind === "navigate" ? "下一步" : "等你确认，再动手"}</span><h3>{proposal.title}</h3>{proposal.kind !== "revise_cut" && <p>{proposal.explanation}</p>}
           {proposal.requirement && <blockquote>{proposal.requirement}</blockquote>}{proposal.narration_text != null && <blockquote aria-label="建议的新旁白">{proposal.narration_text || "移除旁白，保留现场原声。"}</blockquote>}
+          {proposal.kind === "revise_cut" && <><p>镜头内容约 {Math.round(proposal.before_seconds ?? 0)} 秒 → {Math.round(proposal.after_seconds ?? 0)} 秒</p><p>保留 {Array.from(new Set(proposal.cut_changes?.filter(c=>!c.removed).map(c=>c.shot))).join("、")} 段{proposal.cut_changes?.some(c=>c.removed) ? "，部分画面与原声不进入新版" : "，按原顺序衔接"}</p><details><summary>查看剪法与影响</summary><p>{proposal.explanation}</p><div aria-label="镜头调整安排">{proposal.cut_changes?.map((change,index)=><blockquote key={index}><small>{change.removed ? "不放入新版" : "保留"} · 原版第{change.shot}段</small><p>{change.reason}</p>{proposal.base_version_id && <SubtitleProposalReplay versionId={proposal.base_version_id} start={change.start} end={change.end} disabled={blocked || proposal.status === "stale"} cut />}</blockquote>)}</div></details><small>另存候选，旧版保留，不新增模型费用。</small></>}
+          {proposal.kind === "revise_subtitles" && <><div aria-label="字幕修改对照">{proposal.subtitle_changes?.map((change, index) => <blockquote key={index}><small>{Math.floor(change.start)}—{Math.ceil(change.end)}秒</small><p>原文：{change.before}</p><p>建议：{change.after}</p>{proposal.base_version_id && <SubtitleProposalReplay versionId={proposal.base_version_id} start={change.start} end={change.end} disabled={blocked || proposal.status === "stale"} />}</blockquote>)}</div><small>先回听确认文字。只改字幕并另存合成，原片和原声保留，不新增模型费用。</small></>}
+          {proposal.kind === "review_sequence" && <><p>查看成片 {Math.floor(proposal.start ?? 0)}—{Math.ceil(proposal.end ?? 0)} 秒</p>
+            {proposal.status === "pending" ? <small>发送这段画面的抽帧给模型，只看动作，不改片。{cost}</small> : proposal.status === "applied" && <div role="status">
+              <p>{proposal.review_state === "queued" ? "已排队，稍后开始看这段。" : proposal.review_state === "running" ? "导演正在看这段动作…" : proposal.review_summary || "正在取回观察结果…"}</p>
+              {proposal.review_state === "succeeded" && <small>抽样观察，不含声音；可以接着问导演怎么剪。</small>}
+            </div>}</>}
           {proposal.kind === "revise_directions" && <small>会按以上要求重新生成方案。{cost}</small>}
           {proposal.kind === "revise_narration" && <small>另存为新草案；确认旁白声音与合成在下一步。</small>}
           {proposal.status === "pending" ? <button type="button" className="director-chat-primary" disabled={blocked} onClick={() => void apply(proposal)}>{busy === proposal.id ? "正在处理…" : labels[proposal.kind]}<ArrowRight size={15} /></button>
-            : <span className="director-action-result">{proposal.status === "applied" ? "已按这条建议处理" : "节目已更新，这条建议不再适用"}</span>}
+            : (proposal.kind !== "review_sequence" || proposal.status === "stale") && <span className="director-action-result">{proposal.status === "applied" ? "已按这条建议处理" : "节目已更新，这条建议不再适用"}</span>}
         </section>)}
       </article>)}
       {pending && <p className="director-chat-thinking" role="status"><LoaderCircle size={15} className="director-chat-spin" />导演正在结合本期内容思考…</p>}
@@ -417,6 +461,7 @@ function DirectorConversation({ ownerId, episodeId, active, context, budget, onN
     {(readError || actionError) && <div className="director-chat-notice" role="alert" inert={historyOpen}><p>{readError || actionError}</p><button type="button" disabled={loading || !active} onClick={() => void load()}><RefreshCw size={13} />重新读取对话</button></div>}
     {state && !state.can_chat && <p className="director-chat-unavailable" inert={historyOpen}>{state.reason || "真实导演对话暂未就绪，请先完成页面提示的配置。"}</p>}
     <form className="director-chat-composer" onSubmit={send}>
+      {reviewFocus && <p className="director-chat-focus" role="status">正在讨论：{reviewFocus.label}</p>}
       <div className="director-chat-input-pill" inert={historyOpen}>
         <label className="sr-only" htmlFor={inputId}>和AI导演对话</label>
         <textarea ref={input} id={inputId} value={text} maxLength={2000} rows={1} onChange={event => edit(event.target.value)} disabled={!active || !!busy || hasRequest}
@@ -429,4 +474,13 @@ function DirectorConversation({ ownerId, episodeId, active, context, budget, onN
       <details className="director-chat-disclosure" inert={historyOpen}><summary>发送说明</summary><p>{state?.mode === "demo" ? "演示只返回固定内容，不理解素材、不调用模型。" : `发送会将本期已确认的素材说明和对话交给AI导演。${cost}`}</p></details>
     </form>
   </div>;
+}
+
+
+function SubtitleProposalReplay({ versionId, start, end, disabled, cut = false }: { versionId: string; start: number; end: number; disabled: boolean; cut?: boolean }) {
+  const [open, setOpen] = useState(false);
+  return <><Button disabled={disabled} onClick={() => setOpen(true)}>{cut ? "看看这一段" : "回听这处"}</Button>
+    <Dialog open={open && !disabled} onClose={() => setOpen(false)} title={cut ? "查看建议对应的原片段" : "回听建议对应的原话"}>
+      <MediaPlayer src={`/api/v1/versions/${versionId}/media`} title={cut ? "镜头建议片段" : "字幕建议原话"} start={start} end={end} />
+    </Dialog></>;
 }

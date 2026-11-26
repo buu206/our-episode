@@ -5,14 +5,19 @@ import type { Asset, Segment, SubtitleTrack, Version } from "@/lib/types";
 import { Button, Dialog, MediaPlayer, Notice } from "../ui";
 import styles from "./subtitle-editor.module.css";
 
-export function SubtitleEditor({ version, assets, busy, onClose, onSave }: {
+export type SubtitleReviewTarget = { version_id: string; cue_id: string; caption: string; recognized: string };
+
+export function SubtitleEditor({ version, assets, busy, onClose, onSave, target }: {
   version: Version; assets: Asset[]; busy: boolean; onClose: () => void;
   onSave: (segments: Segment[]) => Promise<boolean>;
+  target?: SubtitleReviewTarget;
 }) {
   const [rows, setRows] = useState<SubtitleTrack["rows"]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [index, setIndex] = useState(0);
+  const [targetIndex, setTargetIndex] = useState<number | null>(null);
+  const [targetWarning, setTargetWarning] = useState("");
   const videoBox = useRef<HTMLDivElement>(null);
   const [dirty, setDirty] = useState(false);
   useEffect(() => {
@@ -21,10 +26,18 @@ export function SubtitleEditor({ version, assets, busy, onClose, onSave }: {
       if (controller.signal.aborted) return;
       if (track.version_id !== version.id) throw new Error("版本已变化，请重新打开。");
       setRows(track.rows);
+      if (target) {
+        const matches = track.rows.map((row, at) => ({ row, at })).filter(({ row }) => row.cue_id === target.cue_id);
+        if (target.version_id === version.id && matches.length === 1 && !matches[0].row.hidden && matches[0].row.text === target.caption) {
+          setIndex(matches[0].at); setTargetIndex(matches[0].at);
+        } else {
+          setTargetWarning("这条差异无法唯一对应当前字幕，请手动选句；未套用识别文字。");
+        }
+      }
     }).catch(e => { if (!controller.signal.aborted) setError(e instanceof Error ? e.message : "字幕读取失败。"); })
       .finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => controller.abort();
-  }, [version.id]);
+  }, [version.id, target]);
   useEffect(() => {
     const prevent = (event: BeforeUnloadEvent) => { if (dirty) { event.preventDefault(); event.returnValue = ""; } };
     window.addEventListener("beforeunload", prevent);
@@ -48,6 +61,7 @@ export function SubtitleEditor({ version, assets, busy, onClose, onSave }: {
     <p className={styles.hint}>听一句，改一句。只改字幕，现场原声与旧版本保留。</p>
     {loading && <p role="status">正在读取字幕…</p>}
     {error && <Notice tone="error">{error}</Notice>}
+    {targetWarning && <Notice>{targetWarning}</Notice>}
     {!loading && !error && !rows.length && <p>本版没有可校对的对白字幕。</p>}
     {row && <>
       <nav className={styles.navigation} aria-label="字幕导航">
@@ -61,6 +75,11 @@ export function SubtitleEditor({ version, assets, busy, onClose, onSave }: {
           <div className={styles.tools}><Button disabled={busy || !asset} onClick={() => { const video = videoBox.current?.querySelector("video"); if (video) { video.currentTime = Math.max(0, row.start - .3); void video.play().catch(() => setError("未能开始播放，请点视频中的播放按钮。")); } }}>回听这一句</Button>{row.reviewed && <span>已校对</span>}</div>
           {row.flags.length > 0 && <p className={styles.flag}>{row.flags.join(" · ")}</p>}
           {row.locked && <Notice>这是本人确认的采访表达，请通过采访修订流程修改。</Notice>}
+          {target && index === targetIndex && <div className={styles.suggestion}>
+            <p>重新识别：{target.recognized || "没有识别到对应内容"}</p>
+            <span>也可能听错，回听后再决定。保存前不会改动成片。</span>
+            {target.recognized.trim() && <Button disabled={busy || row.locked || row.text === target.recognized} onClick={() => change({ text: target.recognized })}>用作修改草稿</Button>}
+          </div>}
           <label className="field">屏幕上显示的字幕<textarea aria-label="屏幕上显示的字幕" rows={3} maxLength={500} disabled={busy || row.locked} value={row.text} onChange={event => change({ text: event.target.value })} /></label>
           <label className="check-field"><input type="checkbox" checked={row.hidden} disabled={busy || row.locked} onChange={event => change({ hidden: event.target.checked })} />不显示这一句（原声保留）</label>
           <div className={styles.tools}><Button disabled={busy || row.locked} onClick={() => change({})}>这句没问题</Button><Button disabled={busy || row.locked} onClick={() => change({ text: row.original_text, hidden: false })}>恢复识别文字</Button></div>

@@ -232,6 +232,12 @@ class Pipeline:
             raise DomainError('CLOUD_DISABLED', reason, 409)
 
     def _validate_job(self, db, job):
+        if job.kind == 'sequence_review':
+            from .sequence_review import validate_job
+            return validate_job(self.repo, db, job)
+        if job.kind == 'audio_review':
+            from .audio_review import validate_job
+            return validate_job(self.repo, db, job)
         if job.kind == 'visual_review':
             from .visual_review import validate_job
             return validate_job(self.repo, db, job)
@@ -460,6 +466,8 @@ class Pipeline:
             check_grounding(valid, evidence)
         except DirectorError as exc:
             raise DomainError(exc.code, exc.message, 409) from None
+        from .editing_brief import inspect_directions
+        editing_review = inspect_directions(valid.directions)
         with self.repo.transaction() as db:
             job = db.get(Job, job_id)
             episode, _ = self._validate_job(db, job)
@@ -467,15 +475,22 @@ class Pipeline:
                 # Operator-created verification jobs use the same production
                 # adapters, budget and schema checks without replacing a user's
                 # chosen story or invalidating their existing edit.
+                review = {}
+                reference = job.payload.get('revision_context', {}).get('current_version')
+                if reference is not None:
+                    from .revision_review import directions as review_directions
+                    review['revision_review'] = review_directions(reference['segments'], valid.directions, evidence)
                 self.finish(db, job, {'direction_count': len(valid.directions),
-                    'validation_only': True, 'directions': valid.model_dump()},
+                    'validation_only': True, 'directions': valid.model_dump(),
+                    'editing_review': editing_review, **review},
                     '编导真实补验完成，当前方案保持')
                 return
             episode.directions = [d.model_dump(exclude_defaults=True) for d in valid.directions]
             episode.directions_revision = episode.evidence_revision
             director_guidance.published(db, episode, job.payload.get('brief_revision', 0))
             episode.analysis_notes = list(episode.analysis_notes) + valid.uncertainties
-            self.finish(db, job, {'direction_count': len(valid.directions)}, '请选择有来源依据的节目方向')
+            self.finish(db, job, {'direction_count': len(valid.directions),
+                                 'editing_review': editing_review}, '请选择有来源依据的节目方向')
 
     def narrate(self, job_id):
         with self.repo.factory() as db:
@@ -524,6 +539,12 @@ class Pipeline:
         self.repo.audit(db, job.owner_id, job.kind + '_succeeded', job.id)
 
     def run(self, job_id, kind):
+        if kind == 'sequence_review':
+            from .sequence_review import run
+            return run(self, job_id)
+        if kind == 'audio_review':
+            from .audio_review import run
+            return run(self, job_id)
         if kind == 'visual_review':
             from .visual_review import run
             return run(self, job_id)

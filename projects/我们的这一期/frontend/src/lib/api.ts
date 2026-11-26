@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { DirectorChatStateSchema, DirectorChatActionResultSchema } from "./director-chat";
 import { DIRECTOR_VOICE_MAX_BYTES, DirectorVoiceSchema, DirectorVoicesSchema, DirectorVoiceStatusSchema, type DirectorVoice, type DirectorVoiceConsent } from "./director-voice";
-import { SubtitleTrackSchema, DirectorStateSchema, RetentionSchema, AssetSchema, AuthSchema, EpisodeSchema, EpisodesSchema, ImpactSchema, JobSchema, OkSchema, StatusSchema, VersionSchema, type Asset } from "./types";
+import { FinishingStateSchema, SubtitleTrackSchema, DirectorStateSchema, RetentionSchema, AssetSchema, AuthSchema, EpisodeSchema, EpisodesSchema, ImpactSchema, JobSchema, OkSchema, StatusSchema, VersionSchema, type Asset } from "./types";
 import {
   ParticipantAuthSchema, InvitationSchema, InvitationCreatedSchema, InvitationsSchema, SubmissionSchema,
   SubmissionsSchema, RevisionSchema, ObjectionSchema, ObjectionsSchema, ShareSchema, ShareCreatedSchema,
@@ -28,7 +28,7 @@ export class AppError extends Error {
 }
 export type ApiOptions = { method?: ApiMethod; body?: unknown; signal?: AbortSignal };
 const schemas: Partial<Record<RouteKind, z.ZodType>> = {
-  subtitles: SubtitleTrackSchema,
+  finishing: FinishingStateSchema, subtitles: SubtitleTrackSchema,
   directorVoice: DirectorVoiceSchema, directorVoices: DirectorVoicesSchema, directorVoiceStatus: DirectorVoiceStatusSchema,
   directorChat: DirectorChatStateSchema, directorChatAction: DirectorChatActionResultSchema,
   directorState: DirectorStateSchema,

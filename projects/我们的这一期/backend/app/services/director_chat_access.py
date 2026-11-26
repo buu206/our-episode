@@ -214,12 +214,22 @@ class ScopedDirectorChat(_ScopedAccess, DeepSeekDirectorChat):
         self._guard()
         self._validate_payload()
         user, _ = prepare_chat_input(context)
-        prompt = Path(__file__).with_name('prompts').joinpath('director_chat.txt').read_text(encoding='utf-8')
+        from .director_chat_model import load_chat_prompt
+        prompt = load_chat_prompt(context)
         self._allowed_messages = _digest([{'role': 'system', 'content': prompt}, {'role': 'user', 'content': user}])
         return await super().chat(context, reservation=reservation)
 
 
 class ScopedDirector(_ScopedAccess, DeepSeekDirector):
+    def _proposal_input(self, evidence, assets, background):
+        from .revision_context import prepare
+        return prepare(evidence, assets, background, self._revision_context)
+
+    def _proposal_prompt(self):
+        from .revision_context import PROMPT
+        original = super()._proposal_prompt()
+        return original + '\n\n' + PROMPT.read_text() if self._revision_context is not None else original
+
     def ready(self):
         allowed, reason = super().ready()
         if not allowed:
@@ -245,21 +255,34 @@ class ScopedDirector(_ScopedAccess, DeepSeekDirector):
     def _validate_payload(self):
         if _digest(self._current_payload()) != self._payload_digest:
             _stop('DIRECTOR_CONTEXT_CHANGED', '本期已确认内容或导演要求变化，尚未发送请求。')
+        from .revision_context import snapshot
+        if _digest(snapshot(self._repo, self._context)) != _digest(self._revision_context):
+            _stop('REVISION_CONTEXT_CHANGED', '故事改版依据已变化，尚未发送请求。')
 
     async def propose(self, evidence, assets, background='', *, reservation=None):
         self._guard()
+        from .revision_context import snapshot
+        self._revision_context = snapshot(self._repo, self._context)
         self._payload_digest = _digest([evidence, assets, background])
         self._validate_payload()
-        user = prepare_input(evidence, assets, background)
-        prompt = Path(__file__).with_name('prompts').joinpath('director.txt').read_text()
+        user = self._proposal_input(evidence, assets, background)
+        prompt = self._proposal_prompt()
         self._allowed_messages = _digest([{'role': 'system', 'content': prompt}, {'role': 'user', 'content': user}])
-        return await super().propose(evidence, assets, background, reservation=reservation)
+        result = await super().propose(evidence, assets, background, reservation=reservation)
+        try:
+            self._validate_payload()
+        except (DomainError, DirectorError) as exc:
+            raise DirectorError(exc.code, exc.message, usage=result['usage']) from None
+        return result
 
 
 def chat_adapter(config, repo=None, context=None, permit=None):
     normal = DeepSeekDirectorChat(config, budget_check=permit)
     if normal.ready()[0] or repo is None or context is None:
         return normal
+    from .public_director_access import PublicDirectorChat, present
+    if present(repo, context):
+        return PublicDirectorChat(config, repo, context, permit)
     return ScopedDirectorChat(config, repo, context, permit)
 
 

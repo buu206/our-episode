@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Literal
 import math
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator, model_serializer
 from pydantic_core import PydanticCustomError
 
 
@@ -21,9 +21,27 @@ class EditorialBeat(BaseModel):
     duration: float = Field(default=0, ge=0, le=6)
     text: str = Field(default='', max_length=10)
     detail: str = Field(default='', max_length=40)
+    layout: Literal['legacy', 'adaptive'] = 'legacy'
+    sound: Literal['legacy', 'none', 'wood', 'resolve'] = 'legacy'
+    sound_delay: float = Field(default=0., ge=0, le=2.4)
+
+    @model_serializer(mode='wrap')
+    def compatible_layout(self,handler):
+        data=handler(self)
+        for key,default in (('layout','legacy'),('sound','legacy'),('sound_delay',0.)):
+            if getattr(self,key)==default:data.pop(key,None)
+        return data
 
     @model_validator(mode='after')
     def executable(self):
+        if self.layout=='adaptive' and (self.treatment!='accent' or self.sound=='legacy'):
+            raise PydanticCustomError('editorial_adaptive_contract','自适应仅用于短花字，并须明确静音或动作提示音。')
+        if self.layout=='adaptive' and len(self.text)>8:
+            raise PydanticCustomError('editorial_adaptive_length','自适应花字最多8个字。')
+        if self.treatment=='none' and (self.sound!='legacy' or self.sound_delay):
+            raise PydanticCustomError('editorial_none_sound','留白不能携带音效。')
+        if self.sound_delay and (self.sound not in ('wood','resolve') or self.sound_delay+.18>self.duration):
+            raise PydanticCustomError('editorial_sound_bounds','动作提示音须完整位于包装节点内。')
         if (not self.reason.strip() or any(not x.strip() or len(x)>128 for x in self.evidence_ids)
                 or len(set(self.evidence_ids)) != len(self.evidence_ids)
                 or any(ord(c)<32 for c in self.text+self.detail)):
@@ -91,3 +109,35 @@ def validate_editorial_sources(shot, sources):
     if beat.treatment!='none' and not any(row.get('kind')!='continuity' and row['start']<=beat.source_time and
             row['end']>=beat.source_time+beat.duration for row in refs):
         raise ValueError('编导包装时段超出所引用的依据。')
+
+
+def retain_cut(proposed, locked):
+    """Only transfer editorial choices inside the explicitly locked source cut.
+
+    No model can add/reorder/repeat source time. Missing coverage is a failure;
+    effects crossing locked boundaries become explicit whitespace, never clipped.
+    """
+    from copy import deepcopy
+    if any(s.get('transition','cut')!='cut' for s in locked):
+        raise ValueError('仅改包装当前要求锁定版本使用直接切换。')
+    if any(s.get('subtitle_edits') for s in locked):
+        raise ValueError('已校对字幕的分段当前不可自动拆分。')
+    output=[]
+    for source in locked:
+        rows=sorted([s for s in proposed if s['asset_id']==source['asset_id'] and
+                     min(s['end'],source['end'])>max(s['start'],source['start'])],key=lambda s:s['start'])
+        cursor=source['start']
+        for item in rows:
+            start=max(source['start'],item['start']);end=min(source['end'],item['end'])
+            if abs(start-cursor)>1e-6:raise ValueError('包装方案覆盖有空缺或重叠，未改变锁定剪点。')
+            row=deepcopy(item);row.update(start=start,end=end,transition='cut',transition_duration=0,caption='')
+            if row.get('visual_beats'):raise ValueError('仅改自动包装不接受模型空间坐标。')
+            beat=row.get('editorial')
+            if beat and beat['treatment']!='none' and not (start<=beat['source_time'] and beat['source_time']+beat['duration']<=end+1e-6):
+                row['editorial']={k:beat[k] for k in ('role','reason','evidence_ids')}
+                row['editorial'].update(treatment='none',reason='包装节点超出锁定选段，保留原动作并留白。')
+            output.append(row);cursor=end
+        if abs(cursor-source['end'])>1e-6:raise ValueError('包装方案没有覆盖完整锁定选段。')
+    if len(output)>30:raise ValueError('包装节点分段过多，请缩减。')
+    compile_editorial(output)
+    return output

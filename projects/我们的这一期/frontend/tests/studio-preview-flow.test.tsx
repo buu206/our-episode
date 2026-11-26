@@ -94,7 +94,9 @@ describe("guided preview action", () => {
     expect(saved.versions[0]).toEqual(confirmed);
     expect(saved.versions[1].narration_text).toBe("这桌的故事，开始了。");
     expect(voiceWrites()).toHaveLength(0);
-    expect(readWorkspaceDraft(eid)?.draft).toBeUndefined();
+    // The render request is observable before React commits the saved draft
+    // and its cache-clearing effect. Wait for the persisted UI outcome too.
+    await waitFor(() => expect(readWorkspaceDraft(eid)?.draft).toBeUndefined());
   });
 
   it("renders an unchanged saved draft directly without manufacturing another version", async () => {

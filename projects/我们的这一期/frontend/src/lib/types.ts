@@ -24,6 +24,10 @@ export const VisualBeatSchema = z.object({
   kind: z.enum(["focus", "burst", "comic_space", "cutout", "headline"]), source_time: nonnegative,
   duration: finite.min(.4).max(2.5), text: boundedText(0, 8).optional(),
   position: z.enum(["top_left", "top_right", "bottom_left", "bottom_right"]).optional(),
+  palette: z.enum(["candy", "amber", "mint", "coral"]).optional(),
+  scale: finite.min(.5).max(1).optional(),
+  sound: z.enum(["legacy", "none", "wood", "resolve"]).optional(),
+  sound_delay: nonnegative.max(2.4).optional(),
   contour: z.array(z.object({ x: finite.min(0).max(1), y: finite.min(0).max(1) })).min(3).max(64).optional(),
   target: z.object({ x: finite.min(0).max(1), y: finite.min(0).max(1),
     width: finite.min(.08).max(1), height: finite.min(.08).max(1) })
@@ -34,6 +38,9 @@ export const EditorialBeatSchema = z.object({
   treatment: z.enum(["none", "chapter", "accent"]), reason: boundedText(1, 160),
   evidence_ids: z.array(id).min(1).max(10), source_time: nonnegative.nullable().optional(),
   duration: nonnegative.max(6).optional(), text: boundedText(0, 10).optional(), detail: boundedText(0, 40).optional(),
+  layout: z.enum(["legacy", "adaptive"]).optional(),
+  sound: z.enum(["legacy", "none", "wood", "resolve"]).optional(),
+  sound_delay: nonnegative.max(2.4).optional(),
 }).strict();
 export const SubtitleEditSchema = z.object({ cue_id: z.string().regex(/^[a-f0-9]{32}$/), text: z.string().max(500), hidden: z.boolean(), reviewed: z.boolean() });
 export const SubtitleTrackSchema = z.object({ version_id: id, rows: z.array(z.object({
@@ -51,8 +58,15 @@ export const SegmentSchema = z.object({
   visual_beats: z.array(VisualBeatSchema).max(4).optional(),
   editorial: EditorialBeatSchema.optional(),
   subtitle_edits: z.array(SubtitleEditSchema).max(150).optional(),
+  frame_accents: z.array(z.object({ source_time: nonnegative, duration: finite.min(.5).max(3), palette: z.enum(["coral", "amber", "mint"]) })).max(2).optional(),
 }).refine((value) => value.end > value.start, "Invalid segment interval");
 export type Segment = z.infer<typeof SegmentSchema>;
+export const FinishingStateSchema = z.object({
+  revision: z.number().int().nonnegative(), step: z.number().int().min(1).max(3), completed: z.number().int().min(0).max(3),
+  generated_version_id: id.nullable(),
+  draft: z.object({ title: z.string(), segments: z.array(SegmentSchema), packaging: z.literal("variety_v2"), narration_text: boundedText(0,120), base_version_id: id }),
+});
+export type FinishingState = z.infer<typeof FinishingStateSchema>;
 export const AssetSchema = z.object({
   id, filename: z.string(), duration: finite.positive(), width: z.number().int().positive(),
   height: z.number().int().positive(), has_audio: z.boolean(), size: z.number().int().nonnegative(),

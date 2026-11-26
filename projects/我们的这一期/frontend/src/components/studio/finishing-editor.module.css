@@ -1,0 +1,24 @@
+.dialog { width:min(1040px, calc(100vw - 24px)); max-width:1040px; background:#fffdf9; border-radius:28px; }
+.steps { display:flex; gap:12px; margin:0 0 18px; padding:0; list-style:none; }
+.steps li { flex:1; display:flex; align-items:center; gap:8px; padding:12px; background:#f4eee5; border-radius:16px; color:#857568; font-size:14px; }
+.steps li[aria-current] { background:#ffe9ef; color:#a43f5c; font-weight:700; }
+.steps span { background:#fffaf3; border-radius:50%; padding:3px 9px; }
+.layout { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:24px; }
+.reference { min-width:0; align-self:start; }
+.reference p,.editor p { font-size:13px; color:#827466; line-height:1.6; }
+.reference video { max-height:40dvh; }
+.editor { max-height:48dvh; overflow:auto; padding:0 8px 4px 0; min-width:0; }
+.editor h3 { font-size:20px; margin:0 0 16px; }
+.card { display:grid; gap:10px; padding:14px; margin:0 0 12px; background:#f7f1e9; border-radius:16px; }
+.card label { display:grid; gap:6px; font-size:13px; }
+.card input:not([type=checkbox]),.card select,.card textarea { width:100%; min-width:0; background:#fffdfa; border:1px solid #e9dfd3; border-radius:10px; color:#302b25; padding:9px; font:inherit; }
+.row { display:flex; flex-wrap:wrap; gap:10px; align-items:center; }
+.row label { flex:1; min-width:90px; }
+.row select { width:auto; }
+.card .check { display:flex; align-items:center; }
+.captions { margin:14px 0; }
+.captions summary { padding:12px 0; cursor:pointer; font-weight:600; }
+.footer { display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; border-top:1px solid #ece3d8; margin-top:18px; padding-top:16px; }
+.footer>span { font-size:12px; color:#827466; }
+.footer>div { display:flex; gap:8px; flex-wrap:wrap; }
+@media(max-width:650px) { .layout{grid-template-columns:1fr;gap:12px} .reference video{max-height:23dvh} .editor{max-height:32dvh} .steps{gap:5px}.steps li{padding:8px 5px;gap:4px;font-size:12px}.steps span{padding:2px 6px}.footer>div{width:100%}.footer button{flex:1;padding:10px 8px;font-size:12px} }

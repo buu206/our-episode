@@ -130,7 +130,17 @@ def decorate_visual_beats(base: Path, output: Path, segments: list[dict], temp: 
         segment = next(s for s, t in zip(segments, times) if t.start - .000001 <= start-offset < t.end)
         if beat.kind in ('cutout', 'headline'):
             from .sticker_beats import render_frames
-            sequence = render_frames(beat, Path(segment['path']), temp / f'sticker-{i}', width, height)
+            from .automatic_treatment import subtitle_layout
+            from .dialogue_captions import caption_timeline
+            nearby=[line['text'] for line in caption_timeline(segments,offset)
+                    if line['start']<end+.5 and line['end']>start-.5]
+            # Joined speakers and wrapped lines use the same font/layout as subtitles.
+            safe_bottom=None
+            if nearby:
+                _,_,size,y=subtitle_layout(width,height,' / '.join(dict.fromkeys(nearby)))
+                safe_bottom=max(8,int(y-size*.62-12))
+            sequence = render_frames(beat, Path(segment['path']), temp / f'sticker-{i}', width, height,
+                                     safe_bottom=safe_bottom)
             args += ['-framerate', '30', '-t', f'{beat.duration:.6f}', '-i', str(sequence)]
             filters.append(f'[{next_input}:v]format=rgba,setpts=PTS+{start:.6f}/TB[g{i}]')
             next_input += 1
@@ -180,5 +190,5 @@ def decorate_visual_beats(base: Path, output: Path, segments: list[dict], temp: 
     info = media.probe(output)
     if abs(info['duration']-source.duration) > .12 or not info['has_audio'] or (info['width'], info['height']) != (width,height):
         raise media.MediaError('MEDIA_RENDER_FAILED', '视觉强调后的画幅、声音或时长校验失败。')
-    return {'visual_beats_revision': 'sticker-v2', 'visual_beats_count': len(beats),
+    return {'visual_beats_revision': 'sticker-v3', 'visual_beats_count': len(beats),
             'reviewed_freeze_cutouts': sum(b.kind == 'cutout' for b, _ in beats)}

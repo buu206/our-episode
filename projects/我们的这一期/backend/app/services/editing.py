@@ -36,6 +36,10 @@ class VisualBeat(BaseModel):
     target: VisualTarget
     text: str = Field(default='', max_length=8)
     position: Literal['top_left', 'top_right', 'bottom_left', 'bottom_right'] = 'bottom_right'
+    palette: Literal['candy', 'amber', 'mint', 'coral'] = 'candy'
+    scale: float = Field(default=1., ge=.5, le=1.)
+    sound: Literal['legacy', 'none', 'wood', 'resolve'] = 'legacy'
+    sound_delay: float = Field(default=0., ge=0, le=2.4)
     contour: list[ContourPoint] | None = Field(default=None, min_length=3, max_length=64)
 
     @model_serializer(mode='wrap')
@@ -43,10 +47,14 @@ class VisualBeat(BaseModel):
         data = handler(self)
         if self.contour is None:
             data.pop('contour', None)
+        for key, default in (('palette','candy'),('scale',1.),('sound','legacy'),('sound_delay',0.)):
+            if getattr(self,key)==default:data.pop(key,None)
         return data
 
     @model_validator(mode='after')
     def readable(self):
+        if self.sound_delay and (self.sound in ('none','legacy') or self.sound_delay+.18>self.duration):
+            raise ValueError('动作音效需要明确类型，并完整落在当前效果时间内。')
         if any(ord(c) < 32 for c in self.text) or self.kind in ('burst', 'headline') and not self.text.strip():
             raise ValueError('表情花字需提供简短可显示文字。')
         if (self.kind == 'cutout') != (self.contour is not None):
@@ -88,6 +96,14 @@ class SubtitleEdit(BaseModel):
         return self
 
 
+class FrameAccent(BaseModel):
+    """A brief frame-edge treatment; never crops or labels a person."""
+    model_config = ConfigDict(extra='forbid', strict=True, allow_inf_nan=False)
+    source_time: float = Field(ge=0)
+    duration: float = Field(ge=.5, le=3)
+    palette: Literal['coral', 'amber', 'mint'] = 'coral'
+
+
 class EditSegment(BaseModel):
     model_config = ConfigDict(extra='forbid', strict=True)
     minimum_duration: ClassVar[float] = .1
@@ -102,6 +118,7 @@ class EditSegment(BaseModel):
     visual_beats: list[VisualBeat] = Field(default_factory=list, max_length=4)
     editorial: EditorialBeat | None = None
     subtitle_edits: list[SubtitleEdit] = Field(default_factory=list, max_length=150)
+    frame_accents: list[FrameAccent] = Field(default_factory=list, max_length=2)
 
     @model_serializer(mode='wrap')
     def compatible_editorial_wire(self, handler):
@@ -110,10 +127,17 @@ class EditSegment(BaseModel):
             data.pop('editorial', None)
         if not self.subtitle_edits:
             data.pop('subtitle_edits', None)
+        if not self.frame_accents:
+            data.pop('frame_accents', None)
         return data
 
     @model_validator(mode='after')
     def valid_shot(self):
+        if any(b.source_time < self.start or b.source_time + b.duration > self.end + 1e-6 for b in self.frame_accents):
+            raise ValueError('边框不能超出当前片段。')
+        ordered_frames = sorted(self.frame_accents, key=lambda b: b.source_time)
+        if any(a.source_time + a.duration > b.source_time for a, b in zip(ordered_frames, ordered_frames[1:])):
+            raise ValueError('同一时刻只保留一种边框。')
         if len({s.cue_id for s in self.subtitle_edits}) != len(self.subtitle_edits):
             raise ValueError('同一句字幕不能重复修改。')
         if (not self.asset_id.strip() or self.end <= self.start

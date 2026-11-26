@@ -257,3 +257,5 @@
 @media(max-width:359px) { .director-chat-suggestions { grid-template-columns:repeat(2,minmax(0,1fr)); } .director-chat-empty h3 { font-size:21px; } .director-chat-empty h3 span { font-size:18px; margin-left:4px; } .director-chat-empty > p { margin-bottom:16px; } }
 @media(max-height:520px) { .director-chat-header { height:80px; } .director-chat-empty { padding:6px 0; } .director-chat-empty > p { margin-bottom:12px; } .director-chat-history { padding-bottom:12px; } }
 @media(prefers-reduced-motion:reduce) { .director-dock,.director-chat-panel,.director-fab,.director-fab-hint,.director-chat-suggestions button { transition:none; } .director-chat-spin { animation:none; } }
+
+.director-chat-focus { grid-column:1 / -1; margin:0 4px; color:#806b5c; font-size:12px; line-height:1.5; }

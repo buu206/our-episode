@@ -117,7 +117,7 @@ class Worker:
                     if version.narration_text and (not version.narration_approved or not narration or not narration.is_file()):
                         raise DomainError('NARRATION_REQUIRED', '旁白未确认或文件缺失，请先完成旁白。', 409)
                     label = '正在本机渲染画面、花字与原声'
-                elif kind in ('analysis', 'directions', 'narration', 'director_chat', 'director_voice', 'visual_review') and self.pipeline:
+                elif kind in ('analysis', 'directions', 'narration', 'director_chat', 'director_voice', 'visual_review', 'sequence_review', 'audio_review') and self.pipeline:
                     self.pipeline._validate_job(db, job)
                     label = '正在检查来源与本期预算'
                 elif kind in ('context_preview', 'submission_preview', 'accept_submission'):
@@ -188,7 +188,7 @@ class Worker:
                 job = db.get(Job, job_id)
                 job.state, job.stage, job.error = 'failed', '处理失败，可查看原因后重试', error
                 version = db.get(Version, job.version_id) if job.version_id else None
-                if version and version.state != 'restricted' and job.kind not in ('technical_review', 'visual_review'):
+                if version and version.state != 'restricted' and job.kind not in ('technical_review', 'visual_review', 'sequence_review', 'audio_review'):
                     version.state, version.error = 'failed', error
                 if output and not output.exists() and not output.is_symlink():
                     release_artifact(db, job, str(output.relative_to(self.repo.data_dir)))

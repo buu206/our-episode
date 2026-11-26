@@ -5,12 +5,16 @@ import subprocess
 import pytest
 
 from app.services import automatic_treatment as treatment, portable_faces as portable
-from app.services.native.face_landmarks_mediapipe import convert_landmarks
+from app.services.native.face_landmarks_mediapipe import convert_landmarks, LEFT_EYE, RIGHT_EYE, MOUTH
 from test_automatic_treatment import face
 
 
 def test_portable_threshold_is_not_an_invented_confidence_score():
     points = [SimpleNamespace(x=.3 + (i % 3) * .1, y=.3 + (i % 4) * .1) for i in range(478)]
+    # An upright synthetic face, rather than a random grid with the mouth above
+    # its eyes. Keep the provider confidence and malformed-output checks below.
+    for i in LEFT_EYE + RIGHT_EYE:points[i].y=.4
+    for i in MOUTH:points[i].y=.55
     result = convert_landmarks(points)
     assert 'confidence' not in result
     assert treatment.valid_face(result)
